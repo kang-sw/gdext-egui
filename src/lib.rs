@@ -16,9 +16,12 @@ use egui::{
 };
 use godot::{
     engine::{
-        self, control::FocusMode, control::LayoutPreset, display_server::CursorShape, CanvasLayer,
-        Control, DisplayServer, ICanvasLayer, IControl, ImageTexture, InputEvent, InputEventKey,
-        InputEventMouseButton, InputEventMouseMotion, RenderingServer, Texture2D,
+        self,
+        control::{FocusMode, LayoutPreset},
+        display_server::CursorShape,
+        notify::ControlNotification,
+        CanvasLayer, Control, DisplayServer, ICanvasLayer, IControl, ImageTexture, InputEvent,
+        InputEventKey, InputEventMouseButton, InputEventMouseMotion, RenderingServer, Texture2D,
     },
     obj::NewAlloc,
     prelude::*,
@@ -257,6 +260,8 @@ impl EguiBridge {
             hovered_files: Vec::default(),
             dropped_files: Vec::default(),
         };
+
+        godot_print!("{:?}", raw.viewport());
 
         // Start next frame rendering.
         self.share.ctx.begin_frame(raw);
@@ -705,6 +710,36 @@ struct EguiViewportIoBridge {
 
 #[godot_api]
 impl IControl for EguiViewportIoBridge {
+    fn on_notification(&mut self, what: ControlNotification) {
+        match what {
+            ControlNotification::FocusEnter => {
+                godot_print!("Focus Enter!");
+                {
+                    let mut txrx = self.share.txrx_latest_focus_viewport.lock();
+                    *txrx = (self.self_id, true);
+                }
+                {
+                    let mut input = self.input.lock();
+                    input.focused = Some(true);
+                }
+            }
+            ControlNotification::FocusExit => {
+                {
+                    let mut txrx = self.share.txrx_latest_focus_viewport.lock();
+
+                    if txrx.0 == self.self_id {
+                        godot_print!("Focus Out!");
+                        *txrx = (self.self_id, false);
+                    }
+                }
+                {
+                    let mut input = self.input.lock();
+                    input.focused = Some(false);
+                }
+            }
+            _ => (),
+        }
+    }
     fn ready(&mut self) {
         {
             let mut base = self.base_mut();
@@ -729,33 +764,19 @@ impl IControl for EguiViewportIoBridge {
         // TODO: self.base_mut().draw_texture_rect_region(texture, rect, src_rect);
         // - Draw the render target texture, with the given rectangle.
 
-        let gd_ds = DisplayServer::singleton();
-        let texture = self.share.screen.lock().texture.clone().upcast();
-
         // Bit blit the texture to the screen
         {
+            let rect = self.get_global_rect();
+
+            let offset = rect.position;
+            let size = rect.size;
+
+            let texture = self.share.screen.lock().texture.clone().upcast();
             let mut base = self.base_mut();
-
-            let global_offset = gd_ds
-                .window_get_position_ex()
-                .window_id(base.get_window().map(|x| x.get_window_id()).unwrap_or(-1))
-                .done();
-            let screen_pos = base.get_screen_position();
-            let size = base.get_size();
-
-            let offset = Vector2::new(
-                global_offset.x as f32 + screen_pos.x,
-                global_offset.y as f32 + screen_pos.y,
-            );
 
             godot_print!("{:?}, {:?}", offset, size);
 
-            base.draw_texture_rect_region(
-                texture,
-                Rect2::new(Vector2::ZERO, size),
-                Rect2::new(offset, size),
-            );
-
+            base.draw_texture_rect_region(texture, Rect2::new(Vector2::ZERO, size), rect);
             base.draw_line(Vector2::new(0., 0.), Vector2::new(23., 41.), Color::CRIMSON);
         }
 
@@ -810,7 +831,43 @@ impl EguiViewportIoBridge {
         self.input = input;
     }
 
+    fn get_global_rect(&self) -> Rect2 {
+        let base = self.base();
+
+        let global_offset = DisplayServer::singleton()
+            .window_get_position_ex()
+            .window_id(base.get_window().map(|x| x.get_window_id()).unwrap_or(-1))
+            .done();
+        let screen_pos = base.get_screen_position();
+        let size = base.get_size();
+
+        let offset = Vector2::new(
+            global_offset.x as f32 + screen_pos.x,
+            global_offset.y as f32 + screen_pos.y,
+        );
+
+        Rect2::new(offset, size)
+    }
+
     fn request_repaint(&self) {
+        let rect = self.get_global_rect();
+        {
+            let mut input = self.input.lock();
+            input.inner_rect = Some(to_egui_rect(rect));
+        }
         self.share.ctx.request_repaint_of(self.self_id);
     }
+}
+
+/* ------------------------------------------ Utilities ----------------------------------------- */
+
+fn to_egui_pos(pos: Vector2) -> egui::Pos2 {
+    egui::pos2(pos.x as f32, pos.y as f32)
+}
+
+fn to_egui_rect(rect: Rect2) -> egui::Rect {
+    let min = to_egui_pos(rect.position);
+    let max = to_egui_pos(rect.position + rect.size);
+
+    egui::Rect::from_min_max(min, max)
 }
