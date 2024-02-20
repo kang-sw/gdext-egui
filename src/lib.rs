@@ -16,9 +16,9 @@ use egui::{
 };
 use godot::{
     engine::{
-        self, control::FocusMode, display_server::CursorShape, CanvasLayer, Control, DisplayServer,
-        ICanvasLayer, IControl, ImageTexture, InputEvent, InputEventKey, InputEventMouseButton,
-        InputEventMouseMotion, RenderingServer, Texture2D,
+        self, control::FocusMode, control::LayoutPreset, display_server::CursorShape, CanvasLayer,
+        Control, DisplayServer, ICanvasLayer, IControl, ImageTexture, InputEvent, InputEventKey,
+        InputEventMouseButton, InputEventMouseMotion, RenderingServer, Texture2D,
     },
     obj::NewAlloc,
     prelude::*,
@@ -32,7 +32,7 @@ use itertools::multizip;
 ///
 /// BUG: We're disabling `tool` attribute, as it causes the editor to crash on hot-reload.
 #[derive(GodotClass)]
-#[class(/*tool,*/ init, base=CanvasLayer)]
+#[class(/*tool,*/ init, base=CanvasLayer, rename=GodotEguiBridge)]
 pub struct EguiBridge {
     base: Base<CanvasLayer>,
 
@@ -42,7 +42,11 @@ pub struct EguiBridge {
     textures: HashMap<egui::TextureId, TextureDescriptor>,
 
     #[init(default=OnReady::manual())]
-    gd_render_target: OnReady<Gd<engine::SubViewport>>,
+    gd_render_viewport: OnReady<Gd<engine::SubViewport>>,
+    #[init(default=OnReady::manual())]
+    gd_root_canvas_item: OnReady<Gd<engine::Control>>,
+
+    canvas_items: Vec<Rid>,
 
     share: SharedContext,
 
@@ -81,7 +85,14 @@ impl ICanvasLayer for EguiBridge {
             self.base_mut().add_child(gd_vp.clone().upcast());
             gd_vp.set_owner(self.to_gd().upcast());
 
-            self.gd_render_target.init(gd_vp);
+            let mut gd_canvas = engine::Control::new_alloc();
+            gd_vp.add_child(gd_canvas.clone().upcast());
+            gd_canvas.set_owner(gd_vp.clone().upcast());
+
+            gd_canvas.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
+
+            self.gd_render_viewport.init(gd_vp);
+            self.gd_root_canvas_item.init(gd_canvas);
         }
 
         // Enable egui context viewport support.
@@ -106,6 +117,12 @@ impl ICanvasLayer for EguiBridge {
         if !self.started {
             // Nothing has happened.
             return;
+        }
+
+        // Canvas items should manually be disposed.
+        let mut rs = RenderingServer::singleton();
+        for item in self.canvas_items.drain(..) {
+            rs.free_rid(item);
         }
 
         let _ = self.share.ctx.end_frame();
@@ -172,7 +189,7 @@ impl EguiBridge {
                 tex.global_offset = [min.x, min.y].map(|x| x as _);
 
                 // Resize render target texture
-                let rt = &mut *self.gd_render_target;
+                let rt = &mut *self.gd_render_viewport;
                 rt.set_size(Vector2i::new(size.x as _, size.y as _));
                 tex.texture = rt.get_texture().unwrap_or_default();
 
@@ -385,87 +402,47 @@ impl EguiBridge {
         // FIXME: Pixels Per Point handling
         let mut rs = RenderingServer::singleton();
 
-        for p in self.share.ctx.tessellate(output.shapes, 1.) {
-            match p.primitive {
+        let pixels_per_point = 1.;
+        let primitives = self.share.ctx.tessellate(output.shapes, pixels_per_point);
+
+        // Performs bookkeeping for each tessellated meshes
+        self.canvas_items
+            .reserve(self.canvas_items.len().min(primitives.len()));
+        for draw_index in self.canvas_items.len()..primitives.len().max(self.canvas_items.len()) {
+            // TODO: insert new canvas item
+            let rid = rs.canvas_item_create();
+            self.canvas_items.push(rid);
+
+            rs.canvas_item_set_parent(rid, self.gd_root_canvas_item.get_canvas_item());
+            rs.canvas_item_set_clip(rid, true);
+            rs.canvas_item_set_draw_index(rid, draw_index as _);
+        }
+
+        // Free any unused canvas items
+        for rid in self
+            .canvas_items
+            .drain(primitives.len()..self.canvas_items.len())
+        {
+            rs.free_rid(rid);
+        }
+
+        // Perform painting for each primitives
+        for (idx_rid, primitive) in primitives.into_iter().enumerate() {
+            match primitive.primitive {
                 epaint::Primitive::Mesh(mesh) => {
-                    // Create mesh from `mesh` data.
+                    let rid = self.canvas_items[idx_rid];
+                    rs.canvas_item_clear(rid);
 
-                    let Some(texture) = self
-                        .textures
-                        .get(&mesh.texture_id)
-                        .map(|x| x.gd_tex.clone())
-                    else {
-                        godot_warn!("Missing Texture: {:?}", mesh.texture_id);
+                    if mesh.is_empty() {
+                        // Clear canvas_item BEFORE checking mesh is empty;
                         continue;
-                    };
-
-                    let mut verts = PackedVector2Array::new();
-                    let mut uvs = PackedVector2Array::new();
-                    let mut colors = PackedColorArray::new();
-                    let mut indices = PackedInt32Array::new();
-
-                    verts.resize(mesh.vertices.len());
-                    colors.resize(mesh.vertices.len());
-                    uvs.resize(mesh.vertices.len());
-
-                    indices.resize(mesh.indices.len());
-
-                    for (src, d_vert, d_uv, d_color) in itertools::multizip((
-                        mesh.vertices.as_slice(),
-                        verts.as_mut_slice(),
-                        uvs.as_mut_slice(),
-                        colors.as_mut_slice(),
-                    )) {
-                        d_vert.x = src.pos.x;
-                        d_vert.y = src.pos.y;
-
-                        d_uv.x = src.uv.x;
-                        d_uv.y = src.uv.y;
-
-                        d_color.r = src.color.r() as f32 / 255.0;
-                        d_color.g = src.color.g() as f32 / 255.0;
-                        d_color.b = src.color.b() as f32 / 255.0;
-                        d_color.a = src.color.a() as f32 / 255.0;
                     }
 
-                    for (src, dst) in multizip((mesh.indices.as_slice(), indices.as_mut_slice())) {
-                        *dst = *src as i32;
-                    }
-
-                    let mut gd_mesh = engine::ArrayMesh::new_gd();
-                    let mut arrays = VariantArray::new();
-
-                    use engine::mesh::ArrayType as AT;
-
-                    arrays.resize(AT::MAX.ord() as _);
-
-                    arrays.set(AT::VERTEX.ord() as _, verts.to_variant());
-                    arrays.set(AT::TEX_UV.ord() as _, uvs.to_variant());
-                    arrays.set(AT::COLOR.ord() as _, colors.to_variant());
-                    arrays.set(AT::INDEX.ord() as _, indices.to_variant());
-
-                    type AF = engine::mesh::ArrayFormat;
-
-                    gd_mesh
-                        .add_surface_from_arrays_ex(engine::mesh::PrimitiveType::TRIANGLES, arrays)
-                        .flags(AF::FLAG_USE_2D_VERTICES)
-                        .done();
-
-                    // godot_print!("surface len:{}", gd_mesh.surface_get_array_len(0));
-
-                    // self.gd_drawer.add_child(mesh_instance.upcast());
-
-                    // self.gd_drawer.draw_mesh(gd_mesh.upcast(), texture.upcast());
-                    gd_mesh.get_rid();
-
-                    // TODO: Create canvas items for each mesh and add them as viewport item.
+                    // Create mesh from `mesh` data.
+                    self.render_mesh(&mut rs, rid, mesh);
                 }
                 epaint::Primitive::Callback(_) => {
-                    // TODO: How should we deal with 3D callbacks?
-
-                    // 1. Providing region of clip rectangle as render target to callback?
-                    // 2. Receiving any camera;
-
+                    // XXX: Is there any way to deal with this?
                     unimplemented!()
                 }
             }
@@ -492,6 +469,92 @@ impl EguiBridge {
 
             control.queue_redraw();
         }
+    }
+
+    fn render_mesh(&mut self, rs: &mut RenderingServer, rid_item: Rid, mesh: egui::Mesh) {
+        let Some(texture) = self
+            .textures
+            .get(&mesh.texture_id)
+            .map(|x| x.gd_tex.clone())
+        else {
+            godot_warn!("Missing Texture: {:?}", mesh.texture_id);
+            return;
+        };
+
+        // FIXME: Debug Code
+        {
+            for face in mesh.indices.windows(3) {
+                let idxs: [_; 3] = std::array::from_fn(|i| face[i] as usize);
+                let v = idxs.map(|i| mesh.vertices[i]);
+                let p = v.map(|v| Vector2::new(v.pos.x, v.pos.y));
+                let c = v.map(|v| v.color).map(|_| Color::MAGENTA);
+
+                rs.canvas_item_add_line(rid_item, p[0], p[1], c[0]);
+                rs.canvas_item_add_line(rid_item, p[1], p[2], c[1]);
+                rs.canvas_item_add_line(rid_item, p[2], p[0], c[2]);
+            }
+        }
+
+        let mut verts = PackedVector2Array::new();
+        let mut uvs = PackedVector2Array::new();
+        let mut colors = PackedColorArray::new();
+        let mut indices = PackedInt32Array::new();
+
+        verts.resize(mesh.vertices.len());
+        colors.resize(mesh.vertices.len());
+        uvs.resize(mesh.vertices.len());
+
+        indices.resize(mesh.indices.len());
+
+        for (src, d_vert, d_uv, d_color) in itertools::multizip((
+            mesh.vertices.as_slice(),
+            verts.as_mut_slice(),
+            uvs.as_mut_slice(),
+            colors.as_mut_slice(),
+        )) {
+            d_vert.x = src.pos.x;
+            d_vert.y = src.pos.y;
+
+            d_uv.x = src.uv.x;
+            d_uv.y = src.uv.y;
+
+            d_color.r = src.color.r() as f32 / 255.0;
+            d_color.g = src.color.g() as f32 / 255.0;
+            d_color.b = src.color.b() as f32 / 255.0;
+            d_color.a = src.color.a() as f32 / 255.0;
+        }
+
+        for (src, dst) in multizip((mesh.indices.as_slice(), indices.as_mut_slice())) {
+            *dst = *src as i32;
+        }
+
+        let mut gd_mesh = engine::ArrayMesh::new_gd();
+        let mut arrays = VariantArray::new();
+
+        use engine::mesh::ArrayType as AT;
+
+        arrays.resize(AT::MAX.ord() as _);
+
+        arrays.set(AT::VERTEX.ord() as _, verts.to_variant());
+        arrays.set(AT::TEX_UV.ord() as _, uvs.to_variant());
+        arrays.set(AT::COLOR.ord() as _, colors.to_variant());
+        arrays.set(AT::INDEX.ord() as _, indices.to_variant());
+
+        type AF = engine::mesh::ArrayFormat;
+
+        gd_mesh
+            .add_surface_from_arrays_ex(engine::mesh::PrimitiveType::TRIANGLES, arrays)
+            .flags(AF::FLAG_USE_2D_VERTICES)
+            .done();
+
+        // godot_print!("surface len:{}", gd_mesh.surface_get_array_len(0));
+
+        // self.gd_drawer.add_child(mesh_instance.upcast());
+
+        // self.gd_drawer.draw_mesh(gd_mesh.upcast(), texture.upcast());
+        gd_mesh.get_rid();
+
+        // TODO: Create canvas items for each mesh and add them as viewport item.
     }
 
     fn spawn_viewport(
@@ -557,15 +620,6 @@ impl EguiBridge {
         // We don't need to deal with focus validity; as it's corrected automatically on
         // every frame start.
     }
-}
-
-/* ------------------------------------------- Painter ------------------------------------------ */
-
-#[derive(GodotClass)]
-#[class(init, base=Control, hidden)]
-struct EguiRenderTargetBridge {
-    base: Base<Control>,
-    share: SharedContext,
 }
 
 /* ------------------------------------------- Context ------------------------------------------ */
@@ -640,7 +694,7 @@ struct WindowEventItem {
 
 /// One EGUI Viewport -> One Egui node
 #[derive(GodotClass)]
-#[class(init, base=Control, hidden)]
+#[class(init, base=Control, hidden, rename=Internal__GodotEguiViewportIoBridge)]
 struct EguiViewportIoBridge {
     base: Base<Control>,
 
@@ -656,7 +710,7 @@ impl IControl for EguiViewportIoBridge {
             let mut base = self.base_mut();
             base.set_focus_mode(FocusMode::CLICK);
             base.set_mouse_filter(engine::control::MouseFilter::STOP);
-            base.set_anchors_and_offsets_preset(engine::control::LayoutPreset::FULL_RECT);
+            base.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
         }
         // This should be able to accept focus, when clicked.
         let ctx = self.share.ctx.clone();
@@ -734,7 +788,7 @@ impl IControl for EguiViewportIoBridge {
 
         if event_accepted {
             // Request redraw of this viewport.
-            self.share.ctx.request_repaint_of(self.self_id);
+            self.request_repaint();
 
             // Consume any input event that was delivered to this control.
 
@@ -754,5 +808,9 @@ impl EguiViewportIoBridge {
         self.self_id = id;
         self.share = share;
         self.input = input;
+    }
+
+    fn request_repaint(&self) {
+        self.share.ctx.request_repaint_of(self.self_id);
     }
 }
