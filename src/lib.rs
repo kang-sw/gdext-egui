@@ -18,15 +18,19 @@ use godot::{
         ICanvasLayer, IControl, ImageTexture, InputEvent, InputEventKey, InputEventMouseButton,
         InputEventMouseMotion, RenderingServer, Texture2D,
     },
+    obj::NewAlloc,
     prelude::*,
 };
+use itertools::multizip;
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                    PRIMARY CONTROLLER BRIDGE                                   */
 /* ---------------------------------------------------------------------------------------------- */
 
+///
+/// BUG: We're disabling `tool` attribute, as it causes the editor to crash on hot-reload.
 #[derive(GodotClass)]
-#[class(init, base=CanvasLayer)]
+#[class(/*tool,*/ init, base=CanvasLayer)]
 pub struct EguiBridge {
     base: Base<CanvasLayer>,
 
@@ -35,9 +39,15 @@ pub struct EguiBridge {
     viewports: HashMap<ViewportId, ViewportContext>,
     textures: HashMap<egui::TextureId, TextureDescriptor>,
 
+    #[init(default=OnReady::manual())]
+    gd_render_target: OnReady<Gd<engine::SubViewport>>,
+
+    #[init(default=OnReady::manual())]
+    gd_drawer: OnReady<Gd<engine::Control>>,
+
     share: SharedContext,
 
-    #[init(default = egui::Rect::NOTHING)]
+    #[init(default=egui::Rect::NOTHING)]
     cached_screen_rect: egui::Rect,
 }
 
@@ -53,17 +63,36 @@ struct SharedContext {
 #[derive(Default)]
 struct RenderTargetInfo {
     global_offset: [u32; 2],
-    texture: Gd<ImageTexture>,
+    texture: Gd<engine::ViewportTexture>,
 }
 
 struct TextureDescriptor {
-    size: [u32; 2],
-    gd_tex: Gd<Texture2D>,
+    gd_src_img: Gd<engine::Image>,
+    gd_tex: Gd<ImageTexture>,
 }
 
 #[godot_api]
 impl ICanvasLayer for EguiBridge {
     fn ready(&mut self) {
+        // Instantiate render target viewport, and full stretched canvas item onto it.
+        {
+            let mut gd_vp = engine::SubViewport::new_alloc();
+
+            self.base_mut().add_child(gd_vp.clone().upcast());
+            gd_vp.set_owner(self.to_gd().upcast());
+
+            let mut gd_draw = engine::Control::new_alloc();
+
+            gd_vp.add_child(gd_draw.clone().upcast());
+            gd_draw.set_owner(gd_vp.clone().upcast());
+
+            gd_draw.set_anchors_preset(engine::control::LayoutPreset::FULL_RECT);
+
+            self.gd_render_target.init(gd_vp);
+            self.gd_drawer.init(gd_draw);
+        }
+
+        // Enable egui context viewport support.
         self.share.ctx.set_embed_viewports(false);
     }
 
@@ -95,6 +124,8 @@ impl EguiBridge {
         let total_screen_rect = {
             let mut bound = egui::Rect::NOTHING;
 
+            // BUG: On hot-reload, VTable gets broken thus call to `get_screen_count`
+            // incurs editor crash.
             for idx_screen in 0..gd_ds.get_screen_count() {
                 let min = gd_ds.screen_get_position_ex().screen(idx_screen).done();
                 let size = gd_ds.screen_get_size_ex().screen(idx_screen).done();
@@ -118,7 +149,12 @@ impl EguiBridge {
 
             tex.global_offset = [min.x, min.y].map(|x| x as _);
 
-            // TODO: Create render target texture
+            // Resize render target texture
+            let rt = &mut *self.gd_render_target;
+            rt.set_size(Vector2i::new(size.x as _, size.y as _));
+            tex.texture = rt.get_texture().unwrap_or_default();
+
+            godot_print!("Resizing render target: {:?}", size);
 
             // XXX: should we deal with `16384 x 16384` screen size limitation?
             // - Hint is utilizing `global_offset`, to actual region that the editor is
@@ -193,6 +229,16 @@ impl EguiBridge {
         // Start next frame rendering.
         self.share.ctx.begin_frame(raw);
 
+        {
+            // FIXME: Remove test code
+
+            egui::debug_text::print(&self.share.ctx, "Debug Text Rendering");
+
+            egui::Window::new("Test Window").show(&self.share.ctx, |ui| {
+                ui.label("Hello, World!");
+            });
+        }
+
         // Now in any code, draw operation can be performed with `self.ctx` object.
     }
 
@@ -231,24 +277,140 @@ impl EguiBridge {
 
         /* -------------------------------------- Painting -------------------------------------- */
 
-        for (id, image_delta) in output.textures_delta.set {
-            // TODO: Update Textures
+        for (id, src) in output.textures_delta.set {
+            godot_print!("Adding Texture: {:?}", id);
+
+            // Retrieve image from delivered data
+            let src_image = {
+                let mut payload = PackedByteArray::new();
+                payload
+                    .resize(src.image.bytes_per_pixel() * src.image.width() * src.image.height());
+
+                let format = match &src.image {
+                    // SAFETY: Using unsafe to reinterpret slice bufers to byte array.
+                    egui::ImageData::Color(x) => unsafe {
+                        // We just assume that the image is in RGBA8 format.
+                        let as_u8_slice = x.pixels.align_to::<u8>().1;
+                        payload.as_mut_slice().copy_from_slice(as_u8_slice);
+
+                        // payload.as_mut_slice().copy;
+                        engine::image::Format::RGBA8
+                    },
+                    egui::ImageData::Font(x) => unsafe {
+                        let as_u8_slice = x.pixels.align_to::<u8>().1;
+                        payload.as_mut_slice().copy_from_slice(as_u8_slice);
+
+                        engine::image::Format::RF
+                    },
+                };
+
+                let Some(src_image) = godot::engine::Image::create_from_data(
+                    src.image.width() as _,
+                    src.image.height() as _,
+                    false,
+                    format,
+                    payload,
+                ) else {
+                    godot_error!("Failed to create image from data!");
+                    continue;
+                };
+
+                src_image
+            };
+
+            if let Some(pos) = src.pos {
+                let tex = self.textures.get_mut(&id).unwrap();
+
+                let src_size = src_image.get_size();
+
+                // Partial update on image
+                let dst_pos = Vector2i::new(pos[0] as _, pos[1] as _);
+
+                tex.gd_src_img
+                    .blit_rect(src_image, Rect2i::new(Vector2i::ZERO, src_size), dst_pos);
+            } else {
+                let Some(gd_tex) = engine::ImageTexture::create_from_image(src_image.clone())
+                else {
+                    godot_error!("Failed to create texture from image!");
+                    continue;
+                };
+
+                let tex = TextureDescriptor {
+                    gd_src_img: src_image,
+                    gd_tex,
+                };
+
+                // In this case, texture MUST be new.
+                assert!(self.textures.insert(id, tex).is_none());
+            }
         }
 
         // TODO: Render all shapes into the render target
 
         // FIXME: Pixels Per Point handling
 
-        let primitives = self.share.ctx.tessellate(output.shapes, 1.);
-
-        if !primitives.is_empty() {
-            godot_print!("{}", primitives.len());
-        }
-
-        for p in primitives {
+        for p in self.share.ctx.tessellate(output.shapes, 1.) {
             match p.primitive {
                 epaint::Primitive::Mesh(mesh) => {
-                    // TODO: Render this onto render target
+                    // Create mesh from `mesh` data.
+
+                    let Some(texture) = self
+                        .textures
+                        .get(&mesh.texture_id)
+                        .map(|x| x.gd_tex.clone())
+                    else {
+                        godot_warn!("Missing Texture: {:?}", mesh.texture_id);
+                        continue;
+                    };
+
+                    let mut verts = PackedVector3Array::new();
+                    let mut uvs = PackedVector2Array::new();
+                    let mut colors = PackedColorArray::new();
+                    let mut indices = PackedInt32Array::new();
+
+                    verts.resize(mesh.vertices.len());
+                    colors.resize(mesh.vertices.len());
+                    uvs.resize(mesh.vertices.len());
+
+                    indices.resize(mesh.indices.len());
+
+                    for (src, d_vert, d_uv, d_color) in itertools::multizip((
+                        mesh.vertices.as_slice(),
+                        verts.as_mut_slice(),
+                        uvs.as_mut_slice(),
+                        colors.as_mut_slice(),
+                    )) {
+                        d_vert.x = src.pos.x;
+                        d_vert.y = src.pos.y;
+
+                        d_uv.x = src.uv.x;
+                        d_uv.y = src.uv.y;
+
+                        d_color.r = src.color.r() as f32 / 255.0;
+                        d_color.g = src.color.g() as f32 / 255.0;
+                        d_color.b = src.color.b() as f32 / 255.0;
+                        d_color.a = src.color.a() as f32 / 255.0;
+                    }
+
+                    for (src, dst) in multizip((mesh.indices.as_slice(), indices.as_mut_slice())) {
+                        *dst = *src as i32;
+                    }
+
+                    let mut gd_mesh = engine::ArrayMesh::new_gd();
+                    let mut arrays = VariantArray::new();
+
+                    use engine::mesh::ArrayType as AT;
+
+                    arrays.resize(AT::MAX.ord() as _);
+
+                    arrays.set(AT::VERTEX.ord() as _, verts.to_variant());
+                    arrays.set(AT::TEX_UV.ord() as _, uvs.to_variant());
+                    arrays.set(AT::COLOR.ord() as _, colors.to_variant());
+                    arrays.set(AT::INDEX.ord() as _, indices.to_variant());
+
+                    gd_mesh.add_surface_from_arrays(engine::mesh::PrimitiveType::TRIANGLES, arrays);
+
+                    self.gd_drawer.draw_mesh(gd_mesh.upcast(), texture.upcast());
                 }
                 epaint::Primitive::Callback(_) => {
                     // TODO: How should we deal with 3D callbacks?
@@ -266,6 +428,14 @@ impl EguiBridge {
 
         for id in output.textures_delta.free {
             // TODO: Free Textures
+            godot_print!("Freeing Texture: {:?}", id);
+
+            // Let it auto-deleted.
+            let Some(_) = self.textures.remove(&id) else {
+                // Texture could be uninitialized due to error.
+                godot_warn!("Texture not found! {:?}", id);
+                continue;
+            };
         }
     }
 
@@ -289,8 +459,7 @@ impl EguiBridge {
             .bind_mut()
             .initiate(self.share.clone(), vp.input.clone());
 
-        if let Some((parent, window_init)) = windowing.filter(|(x, _)| *x != egui::ViewportId::ROOT)
-        {
+        if let Some((parent, window_init)) = windowing {
             // TODO: If we need to create separate window, setup callbacks
             // - Resized => Re-render signal
             // - Close => Forward viewport close event

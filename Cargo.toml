@@ -7,4 +7,6 @@ edition = "2021"
 godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
 egui = "0.26"
 
+itertools = "0.12"
+
 crossbeam-queue = "0.3"
