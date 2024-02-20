@@ -42,9 +42,6 @@ pub struct EguiBridge {
     #[init(default=OnReady::manual())]
     gd_render_target: OnReady<Gd<engine::SubViewport>>,
 
-    #[init(default=OnReady::manual())]
-    gd_drawer: OnReady<Gd<engine::Control>>,
-
     share: SharedContext,
 
     #[init(default=egui::Rect::NOTHING)]
@@ -81,15 +78,7 @@ impl ICanvasLayer for EguiBridge {
             self.base_mut().add_child(gd_vp.clone().upcast());
             gd_vp.set_owner(self.to_gd().upcast());
 
-            let mut gd_draw = engine::Control::new_alloc();
-
-            gd_vp.add_child(gd_draw.clone().upcast());
-            gd_draw.set_owner(gd_vp.clone().upcast());
-
-            gd_draw.set_anchors_preset(engine::control::LayoutPreset::FULL_RECT);
-
             self.gd_render_target.init(gd_vp);
-            self.gd_drawer.init(gd_draw);
         }
 
         // Enable egui context viewport support.
@@ -348,6 +337,7 @@ impl EguiBridge {
         // TODO: Render all shapes into the render target
 
         // FIXME: Pixels Per Point handling
+        let mut rs = RenderingServer::singleton();
 
         for p in self.share.ctx.tessellate(output.shapes, 1.) {
             match p.primitive {
@@ -363,7 +353,7 @@ impl EguiBridge {
                         continue;
                     };
 
-                    let mut verts = PackedVector3Array::new();
+                    let mut verts = PackedVector2Array::new();
                     let mut uvs = PackedVector2Array::new();
                     let mut colors = PackedColorArray::new();
                     let mut indices = PackedInt32Array::new();
@@ -380,6 +370,8 @@ impl EguiBridge {
                         uvs.as_mut_slice(),
                         colors.as_mut_slice(),
                     )) {
+                        // godot_print!("Adding Vertex: {:?}", src.pos);
+
                         d_vert.x = src.pos.x;
                         d_vert.y = src.pos.y;
 
@@ -408,9 +400,21 @@ impl EguiBridge {
                     arrays.set(AT::COLOR.ord() as _, colors.to_variant());
                     arrays.set(AT::INDEX.ord() as _, indices.to_variant());
 
-                    gd_mesh.add_surface_from_arrays(engine::mesh::PrimitiveType::TRIANGLES, arrays);
+                    type AF = engine::mesh::ArrayFormat;
 
-                    self.gd_drawer.draw_mesh(gd_mesh.upcast(), texture.upcast());
+                    gd_mesh
+                        .add_surface_from_arrays_ex(engine::mesh::PrimitiveType::TRIANGLES, arrays)
+                        .flags(AF::FLAG_USE_2D_VERTICES)
+                        .done();
+
+                    godot_print!("surface len:{}", gd_mesh.surface_get_array_len(0));
+
+                    let mut mesh_instance = engine::MeshInstance2D::new_alloc();
+                    mesh_instance.set_mesh(gd_mesh.upcast());
+
+                    // self.gd_drawer.add_child(mesh_instance.upcast());
+
+                    // self.gd_drawer.draw_mesh(gd_mesh.upcast(), texture.upcast());
                 }
                 epaint::Primitive::Callback(_) => {
                     // TODO: How should we deal with 3D callbacks?
@@ -501,6 +505,15 @@ impl EguiBridge {
     }
 }
 
+/* ------------------------------------------- Painter ------------------------------------------ */
+
+#[derive(GodotClass)]
+#[class(init, base=Control, hidden)]
+struct EguiRenderTargetBridge {
+    base: Base<Control>,
+    share: SharedContext,
+}
+
 /* ------------------------------------------- Context ------------------------------------------ */
 
 struct ViewportContext {
@@ -556,23 +569,34 @@ impl IControl for EguiViewportIoBridge {
         // - Draw the render target texture, with the given rectangle.
 
         let gd_ds = DisplayServer::singleton();
-        let mut base = self.base_mut();
+        let texture = self.share.render_target.lock().texture.clone().upcast();
 
-        let global_offset = gd_ds
-            .window_get_position_ex()
-            .window_id(base.get_window().map(|x| x.get_window_id()).unwrap_or(-1))
-            .done();
-        let screen_pos = base.get_screen_position();
-        let size = base.get_size();
+        // Bit blit the texture to the screen
+        {
+            let mut base = self.base_mut();
 
-        let offset = Vector2::new(
-            global_offset.x as f32 + screen_pos.x,
-            global_offset.y as f32 + screen_pos.y,
-        );
+            let global_offset = gd_ds
+                .window_get_position_ex()
+                .window_id(base.get_window().map(|x| x.get_window_id()).unwrap_or(-1))
+                .done();
+            let screen_pos = base.get_screen_position();
+            let size = base.get_size();
 
-        base.draw_line(Vector2::new(0., 0.), Vector2::new(23., 41.), Color::CRIMSON);
+            let offset = Vector2::new(
+                global_offset.x as f32 + screen_pos.x,
+                global_offset.y as f32 + screen_pos.y,
+            );
 
-        godot_print!("{:?}, {:?}", offset, size);
+            base.draw_line(Vector2::new(0., 0.), Vector2::new(23., 41.), Color::CRIMSON);
+
+            godot_print!("{:?}, {:?}", offset, size);
+
+            base.draw_texture_rect_region(
+                texture,
+                Rect2::new(Vector2::ZERO, size),
+                Rect2::new(offset, size),
+            );
+        }
 
         // TODO: target rectangle is [global_offset + screen_pos, size]
     }
