@@ -1,8 +1,10 @@
 #![doc = include_str!("../README.md")]
 
 use std::{
+    collections::BTreeMap,
     mem::take,
     sync::{mpsc, Arc},
+    time::Instant,
 };
 
 use crossbeam_queue::SegQueue;
@@ -55,6 +57,7 @@ struct SharedContext {
     render_target: Arc<Mutex<RenderTargetInfo>>,
     txrx_latest_focus_viewport: Arc<Mutex<(ViewportId, bool)>>,
     txrx_events: Arc<SegQueue<egui::Event>>,
+    repaint_schedule: Arc<Mutex<HashMap<ViewportId, Instant>>>,
 }
 
 #[derive(Default)]
@@ -83,6 +86,16 @@ impl ICanvasLayer for EguiBridge {
 
         // Enable egui context viewport support.
         self.share.ctx.set_embed_viewports(false);
+
+        let sched = self.share.repaint_schedule.clone();
+        self.share.ctx.set_request_repaint_callback(move |req| {
+            let now = Instant::now();
+
+            godot_print!("Requesting Repaint: {:?}", req.viewport_id);
+
+            let mut sched = sched.lock();
+            sched.insert(req.viewport_id, now + req.delay);
+        });
     }
 
     fn process(&mut self, delta: f64) {
@@ -127,29 +140,6 @@ impl EguiBridge {
             bound
         };
 
-        if self.cached_screen_rect != total_screen_rect {
-            self.cached_screen_rect = total_screen_rect;
-
-            // Create render target texture with maximum size.
-            let size = self.cached_screen_rect.size();
-
-            let mut tex = self.share.render_target.lock();
-            let min = self.cached_screen_rect.min;
-
-            tex.global_offset = [min.x, min.y].map(|x| x as _);
-
-            // Resize render target texture
-            let rt = &mut *self.gd_render_target;
-            rt.set_size(Vector2i::new(size.x as _, size.y as _));
-            tex.texture = rt.get_texture().unwrap_or_default();
-
-            godot_print!("Resizing render target: {:?}", size);
-
-            // XXX: should we deal with `16384 x 16384` screen size limitation?
-            // - Hint is utilizing `global_offset`, to actual region that the editor is
-            //   using. e.g. Limit this to primary monitor size when it exceeds the limit.
-        }
-
         // 'end_frame()` should be called from second iteration.
         if !self.started {
             self.started = true;
@@ -157,6 +147,42 @@ impl EguiBridge {
             // Spawn root viewport
             self.spawn_viewport(egui::ViewportId::ROOT, None);
         } else {
+            // Check if any of repaint schedule is expired.
+            let should_repaint = {
+                let sched = self.share.repaint_schedule.lock();
+                let now = Instant::now();
+
+                sched.iter().any(|(_, time)| *time < now)
+            };
+
+            if !should_repaint {
+                return;
+            }
+
+            // Refresh cached screen rectangle, before dealing with render target.
+            if self.cached_screen_rect != total_screen_rect {
+                self.cached_screen_rect = total_screen_rect;
+
+                // Create render target texture with maximum size.
+                let size = self.cached_screen_rect.size();
+
+                let mut tex = self.share.render_target.lock();
+                let min = self.cached_screen_rect.min;
+
+                tex.global_offset = [min.x, min.y].map(|x| x as _);
+
+                // Resize render target texture
+                let rt = &mut *self.gd_render_target;
+                rt.set_size(Vector2i::new(size.x as _, size.y as _));
+                tex.texture = rt.get_texture().unwrap_or_default();
+
+                godot_print!("Resizing render target: {:?}", size);
+
+                // XXX: should we deal with `16384 x 16384` screen size limitation?
+                // - Hint is utilizing `global_offset`, to actual region that the editor is
+                //   using. e.g. Limit this to primary monitor size when it exceeds the limit.
+            }
+
             // From second frame, we start to dealing with screen size
             let full_output = self.share.ctx.end_frame();
             self.handle_output(full_output);
@@ -235,6 +261,9 @@ impl EguiBridge {
         /* -------------------------- Deffered Viewport Rendering Code -------------------------- */
         let gd_ds = DisplayServer::singleton();
         let mut viewport_ids = HashSet::from_iter(self.viewports.keys().copied());
+        let now = Instant::now();
+
+        let mut repainted_viewports = Vec::new();
 
         for (id, vp_output) in output.viewport_output {
             if !viewport_ids.remove(&id) {
@@ -249,13 +278,30 @@ impl EguiBridge {
                     self.despawn_viewport(id);
                     self.spawn_viewport(id, Some((vp_output.parent, init)));
                 } else {
-                    viewport.apply_commands(commands)
+                    viewport.apply_commands(&self.share, commands)
                 }
             };
 
-            // Deal with viewport renderings
-            if let Some(cb) = vp_output.viewport_ui_cb {
-                cb(&self.share.ctx);
+            let repaint = self
+                .share
+                .repaint_schedule
+                .lock()
+                .remove(&id)
+                .map(|y| (vp_output.viewport_ui_cb, y));
+
+            if let Some((deferred, repaint_at)) = repaint {
+                if repaint_at <= now {
+                    // It's time to redraw
+
+                    if let Some(cb) = deferred {
+                        cb(&self.share.ctx)
+                    };
+
+                    repainted_viewports.push(id);
+                } else {
+                    // Oops, we're too early, let's put it back
+                    self.share.repaint_schedule.lock().insert(id, repaint_at);
+                }
             }
         }
 
@@ -370,8 +416,6 @@ impl EguiBridge {
                         uvs.as_mut_slice(),
                         colors.as_mut_slice(),
                     )) {
-                        // godot_print!("Adding Vertex: {:?}", src.pos);
-
                         d_vert.x = src.pos.x;
                         d_vert.y = src.pos.y;
 
@@ -407,14 +451,14 @@ impl EguiBridge {
                         .flags(AF::FLAG_USE_2D_VERTICES)
                         .done();
 
-                    godot_print!("surface len:{}", gd_mesh.surface_get_array_len(0));
-
-                    let mut mesh_instance = engine::MeshInstance2D::new_alloc();
-                    mesh_instance.set_mesh(gd_mesh.upcast());
+                    // godot_print!("surface len:{}", gd_mesh.surface_get_array_len(0));
 
                     // self.gd_drawer.add_child(mesh_instance.upcast());
 
                     // self.gd_drawer.draw_mesh(gd_mesh.upcast(), texture.upcast());
+                    gd_mesh.get_rid();
+
+                    // TODO: Create canvas items for each mesh and add them as viewport item.
                 }
                 epaint::Primitive::Callback(_) => {
                     // TODO: How should we deal with 3D callbacks?
@@ -441,6 +485,13 @@ impl EguiBridge {
                 continue;
             };
         }
+
+        for viewport_id in repainted_viewports {
+            let viewport = self.viewports.get(&viewport_id).unwrap();
+            let mut control = viewport.control.clone();
+
+            control.queue_redraw();
+        }
     }
 
     fn spawn_viewport(
@@ -461,7 +512,7 @@ impl EguiBridge {
 
         gd_control
             .bind_mut()
-            .initiate(self.share.clone(), vp.input.clone());
+            .initiate(id, self.share.clone(), vp.input.clone());
 
         if let Some((parent, window_init)) = windowing {
             // TODO: If we need to create separate window, setup callbacks
@@ -481,12 +532,14 @@ impl EguiBridge {
             window.add_child(gd_control.clone().upcast());
             gd_control.set_owner(window.clone().upcast());
 
-            gd_control.set_anchors_preset(engine::control::LayoutPreset::FULL_RECT);
+            gd_control.set_name(format!("Viewport {:?}", id).to_godot());
         } else {
             godot_print!("Spawned Root!");
 
             self.base_mut().add_child(gd_control.clone().upcast());
             gd_control.set_owner(self.to_gd().upcast());
+
+            gd_control.set_name("Viewport Root".to_godot());
         }
 
         self.viewports.insert(id, vp);
@@ -497,6 +550,7 @@ impl EguiBridge {
         context.control.queue_free();
 
         if let Some(mut window) = context.window {
+            // Should be freed AFTER control, since it's parent of it.
             window.queue_free();
         }
 
@@ -527,7 +581,50 @@ struct ViewportContext {
 }
 
 impl ViewportContext {
-    fn apply_commands(&mut self, commands: Vec<egui::ViewportCommand>) {}
+    fn apply_commands(&mut self, share: &SharedContext, commands: Vec<egui::ViewportCommand>) {
+        for command in commands {
+            use egui::ViewportCommand::*;
+
+            match command {
+                Close => (),
+                CancelClose => (),
+                Title(_) => (),
+                Transparent(_) => (),
+                Visible(_) => (),
+                StartDrag => (),
+                OuterPosition(_) => (),
+                InnerSize(_) => (),
+                MinInnerSize(_) => (),
+                MaxInnerSize(_) => (),
+                ResizeIncrements(_) => (),
+                BeginResize(_) => (),
+                Resizable(_) => (),
+                EnableButtons {
+                    close,
+                    minimized,
+                    maximize,
+                } => (),
+                Minimized(_) => (),
+                Maximized(_) => (),
+                Fullscreen(_) => (),
+                Decorations(_) => (),
+                WindowLevel(_) => (),
+                Icon(_) => (),
+                IMERect(_) => (),
+                IMEAllowed(_) => (),
+                IMEPurpose(_) => (),
+                Focus => (),
+                RequestUserAttention(_) => (),
+                SetTheme(_) => (),
+                ContentProtected(_) => (),
+                CursorPosition(_) => (),
+                CursorGrab(_) => (),
+                CursorVisible(_) => (),
+                MousePassthrough(_) => (),
+                Screenshot => (),
+            }
+        }
+    }
 }
 
 /* ------------------------------------------ Windowing ----------------------------------------- */
@@ -546,22 +643,32 @@ struct WindowEventItem {
 #[class(init, base=Control, hidden)]
 struct EguiViewportIoBridge {
     base: Base<Control>,
-    inner: Option<IoBridgeInner>,
 
+    self_id: ViewportId,
     share: SharedContext,
     input: Arc<Mutex<egui::ViewportInfo>>,
-}
-
-struct IoBridgeInner {
-    ctx: egui::Context,
-    atlas: Texture2D,
 }
 
 #[godot_api]
 impl IControl for EguiViewportIoBridge {
     fn ready(&mut self) {
+        {
+            let mut base = self.base_mut();
+            base.set_focus_mode(FocusMode::CLICK);
+            base.set_mouse_filter(engine::control::MouseFilter::STOP);
+            base.set_anchors_and_offsets_preset(engine::control::LayoutPreset::FULL_RECT);
+        }
         // This should be able to accept focus, when clicked.
-        self.base_mut().set_focus_mode(FocusMode::CLICK);
+        let ctx = self.share.ctx.clone();
+        let self_id = self.self_id;
+
+        self.base_mut().connect(
+            StringName::from_latin1_with_nul(b"resized\0"),
+            Callable::from_fn("Resize Observer", move |_vars| {
+                ctx.request_repaint_of(self_id);
+                Ok(Variant::nil())
+            }),
+        );
     }
 
     fn draw(&mut self) {
@@ -587,8 +694,6 @@ impl IControl for EguiViewportIoBridge {
                 global_offset.y as f32 + screen_pos.y,
             );
 
-            base.draw_line(Vector2::new(0., 0.), Vector2::new(23., 41.), Color::CRIMSON);
-
             godot_print!("{:?}, {:?}", offset, size);
 
             base.draw_texture_rect_region(
@@ -596,6 +701,8 @@ impl IControl for EguiViewportIoBridge {
                 Rect2::new(Vector2::ZERO, size),
                 Rect2::new(offset, size),
             );
+
+            base.draw_line(Vector2::new(0., 0.), Vector2::new(23., 41.), Color::CRIMSON);
         }
 
         // TODO: target rectangle is [global_offset + screen_pos, size]
@@ -603,43 +710,48 @@ impl IControl for EguiViewportIoBridge {
 
     fn gui_input(&mut self, event: Gd<InputEvent>) {
         // TODO: Parse event and convert to EGUI raw input, translating it to viewport offset.
-        let inner = self.inner.as_mut().unwrap();
 
-        let mouse_button = inner
-            .ctx
-            .wants_pointer_input()
-            .then(|| event.clone().try_cast::<InputEventMouseButton>().ok())
-            .and_then(|x| x);
+        let mouse_button = event.clone().try_cast::<InputEventMouseButton>().ok();
+        let mouse_motion = event.clone().try_cast::<InputEventMouseMotion>().ok();
+        let keyboard_event = event.clone().try_cast::<InputEventKey>().ok();
 
-        let mouse_motion = inner
-            .ctx
-            .wants_pointer_input()
-            .then(|| event.clone().try_cast::<InputEventMouseMotion>().ok())
-            .and_then(|x| x);
+        let event_accepted =
+            mouse_button.is_some() || mouse_motion.is_some() || keyboard_event.is_some();
 
-        let keyboard_event = inner
-            .ctx
-            .wants_keyboard_input()
-            .then(|| event.clone().try_cast::<InputEventKey>().ok())
-            .and_then(|x| x);
+        // if let Some(mouse) = mouse_button {
+        //     godot_print!("Caught Mouse Event!");
+        // }
 
-        let event_accepted = mouse_button.is_some() || keyboard_event.is_some();
+        // if let Some(mouse) = mouse_motion {
+        //     godot_print!("Caught Mouse Motion Event!");
+        // }
 
-        if let Some(mouse) = mouse_button {}
+        // if let Some(key) = keyboard_event {
+        //     godot_print!("Caught Keyboard Event!");
+        // }
 
-        if let Some(mouse) = mouse_motion {}
-
-        if let Some(key) = keyboard_event {}
+        // godot_print!("Event!");
 
         if event_accepted {
+            // Request redraw of this viewport.
+            self.share.ctx.request_repaint_of(self.self_id);
+
             // Consume any input event that was delivered to this control.
+
+            // FIXME: Only accept event when any window hit is detected.
             self.base_mut().accept_event();
         }
     }
 }
 
 impl EguiViewportIoBridge {
-    pub fn initiate(&mut self, share: SharedContext, input: Arc<Mutex<egui::ViewportInfo>>) {
+    pub fn initiate(
+        &mut self,
+        id: ViewportId,
+        share: SharedContext,
+        input: Arc<Mutex<egui::ViewportInfo>>,
+    ) {
+        self.self_id = id;
         self.share = share;
         self.input = input;
     }
