@@ -1,0 +1,10 @@
+[package]
+name = "gdext-egui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
+egui = "0.26"
+
+crossbeam-queue = "0.3"
