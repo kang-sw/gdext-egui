@@ -12,7 +12,7 @@ use egui::{
     ahash::{HashMap, HashSet},
     epaint,
     mutex::Mutex,
-    ViewportId,
+    DeferredViewportUiCallback, ViewportId,
 };
 use godot::{
     engine::{
@@ -293,6 +293,18 @@ impl EguiBridge {
 
                     ui.label("Hello, World!");
                 });
+
+            self.share.ctx.show_viewport_deferred(
+                ViewportId::from_hash_of("hello"),
+                egui::ViewportBuilder::default().with_title("hello"),
+                |cx, s| {
+                    egui::Window::new("Test Window In Viewport")
+                        .anchor(egui::Align2::CENTER_CENTER, [0., 0.])
+                        .show(cx, |ui| {
+                            ui.label("Hello, World!");
+                        });
+                },
+            )
         }
 
         // Now in any code, draw operation can be performed with `self.ctx` object.
@@ -583,6 +595,7 @@ impl EguiBridge {
             window: None,
             input: Default::default(),
             window_setup: Default::default(),
+            callback: None,
         };
 
         gd_control
@@ -644,6 +657,8 @@ struct ViewportContext {
 
     window: Option<Gd<engine::Window>>,
     window_setup: egui::ViewportBuilder,
+
+    callback: Option<Arc<DeferredViewportUiCallback>>,
 }
 
 impl ViewportContext {
