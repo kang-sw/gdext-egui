@@ -54,14 +54,14 @@ pub struct EguiBridge {
 #[derive(Default, Clone)]
 struct SharedContext {
     ctx: egui::Context,
-    render_target: Arc<Mutex<RenderTargetInfo>>,
+    screen: Arc<Mutex<ScreenBuffer>>,
     txrx_latest_focus_viewport: Arc<Mutex<(ViewportId, bool)>>,
     txrx_events: Arc<SegQueue<egui::Event>>,
     repaint_schedule: Arc<Mutex<HashMap<ViewportId, Instant>>>,
 }
 
 #[derive(Default)]
-struct RenderTargetInfo {
+struct ScreenBuffer {
     global_offset: [u32; 2],
     texture: Gd<engine::ViewportTexture>,
 }
@@ -166,7 +166,7 @@ impl EguiBridge {
                 // Create render target texture with maximum size.
                 let size = self.cached_screen_rect.size();
 
-                let mut tex = self.share.render_target.lock();
+                let mut tex = self.share.screen.lock();
                 let min = self.cached_screen_rect.min;
 
                 tex.global_offset = [min.x, min.y].map(|x| x as _);
@@ -676,7 +676,7 @@ impl IControl for EguiViewportIoBridge {
         // - Draw the render target texture, with the given rectangle.
 
         let gd_ds = DisplayServer::singleton();
-        let texture = self.share.render_target.lock().texture.clone().upcast();
+        let texture = self.share.screen.lock().texture.clone().upcast();
 
         // Bit blit the texture to the screen
         {
