@@ -55,6 +55,12 @@ pub struct EguiBridge {
 
     #[init(default=egui::Rect::NOTHING)]
     cached_screen_rect: egui::Rect,
+
+    #[export]
+    debug_show_vertex_lines: bool,
+
+    #[export]
+    crash: bool,
 }
 
 /// Shared among all the viewports.
@@ -226,9 +232,13 @@ impl EguiBridge {
                 .viewports
                 .iter()
                 .map(|(id, value)| (*id, value.input.lock().clone()))
+                .map(|(id, mut input)| {
+                    input.native_pixels_per_point = Some(1.);
+                    (id, input)
+                })
                 .collect(),
 
-            screen_rect: Some(total_screen_rect),
+            screen_rect: self.viewports[&ViewportId::ROOT].input.lock().inner_rect,
 
             // FIXME: Remove this magic number!
             max_texture_side: Some(8192),
@@ -250,6 +260,7 @@ impl EguiBridge {
                     mac_cmd: is_pressed(GdKey::META),
                 }
             },
+
             events: std::iter::repeat_with(|| self.share.txrx_events.pop())
                 .map_while(|x| x)
                 .collect(),
@@ -261,7 +272,11 @@ impl EguiBridge {
             dropped_files: Vec::default(),
         };
 
-        godot_print!("{:?}", raw.viewport());
+        // self.share.ctx.set_pixels_per_point(pixels_per_point);
+
+        if self.crash {
+            self.share.ctx.set_zoom_factor(2.);
+        }
 
         // Start next frame rendering.
         self.share.ctx.begin_frame(raw);
@@ -269,11 +284,15 @@ impl EguiBridge {
         {
             // FIXME: Remove test code
 
-            egui::debug_text::print(&self.share.ctx, "Debug Text Rendering");
+            // egui::debug_text::print(&self.share.ctx, "Debug Text Rendering");
 
-            egui::Window::new("Test Window").show(&self.share.ctx, |ui| {
-                ui.label("Hello, World!");
-            });
+            egui::Window::new("Test Window")
+                .anchor(egui::Align2::CENTER_CENTER, [0., 0.])
+                .show(&self.share.ctx, |ui| {
+                    // godot_print!("ui_pos: {:?}", ui.next_widget_position());
+
+                    ui.label("Hello, World!");
+                });
         }
 
         // Now in any code, draw operation can be performed with `self.ctx` object.
@@ -345,20 +364,28 @@ impl EguiBridge {
 
                 let format = match &src.image {
                     // SAFETY: Using unsafe to reinterpret slice bufers to byte array.
-                    egui::ImageData::Color(x) => unsafe {
+                    egui::ImageData::Color(x) => {
                         // We just assume that the image is in RGBA8 format.
-                        let as_u8_slice = x.pixels.align_to::<u8>().1;
-                        payload.as_mut_slice().copy_from_slice(as_u8_slice);
+                        let dst = payload.as_mut_slice();
+
+                        for (i, color) in dst.chunks_mut(4).zip(x.pixels.iter()) {
+                            let color = color.to_srgba_unmultiplied();
+                            i.copy_from_slice(&color);
+                        }
 
                         // payload.as_mut_slice().copy;
                         engine::image::Format::RGBA8
-                    },
-                    egui::ImageData::Font(x) => unsafe {
-                        let as_u8_slice = x.pixels.align_to::<u8>().1;
-                        payload.as_mut_slice().copy_from_slice(as_u8_slice);
+                    }
+                    egui::ImageData::Font(x) => {
+                        let dst = payload.as_mut_slice();
 
-                        engine::image::Format::RF
-                    },
+                        for (i, color) in dst.chunks_mut(4).zip(x.srgba_pixels(None)) {
+                            let color = color.to_array();
+                            i.copy_from_slice(&color);
+                        }
+
+                        engine::image::Format::RGBA8
+                    }
                 };
 
                 let Some(src_image) = godot::engine::Image::create_from_data(
@@ -397,16 +424,16 @@ impl EguiBridge {
                     gd_tex,
                 };
 
-                // In this case, texture MUST be new.
-                assert!(self.textures.insert(id, tex).is_none());
+                // Replace or insert new texture.
+                self.textures.insert(id, tex);
             }
         }
 
-        // TODO: Render all shapes into the render target
+        // Render all shapes into the render target
 
-        // FIXME: Pixels Per Point handling
         let mut rs = RenderingServer::singleton();
 
+        // FIXME: Pixels Per Point handling
         let pixels_per_point = 1.;
         let primitives = self.share.ctx.tessellate(output.shapes, pixels_per_point);
 
@@ -414,7 +441,6 @@ impl EguiBridge {
         self.canvas_items
             .reserve(self.canvas_items.len().min(primitives.len()));
         for draw_index in self.canvas_items.len()..primitives.len().max(self.canvas_items.len()) {
-            // TODO: insert new canvas item
             let rid = rs.canvas_item_create();
             self.canvas_items.push(rid);
 
@@ -444,7 +470,7 @@ impl EguiBridge {
                     }
 
                     // Create mesh from `mesh` data.
-                    self.render_mesh(&mut rs, rid, mesh);
+                    self.render_mesh(&mut rs, rid, primitive.clip_rect, mesh);
                 }
                 epaint::Primitive::Callback(_) => {
                     // XXX: Is there any way to deal with this?
@@ -457,7 +483,6 @@ impl EguiBridge {
         //   drawing.
 
         for id in output.textures_delta.free {
-            // TODO: Free Textures
             godot_print!("Freeing Texture: {:?}", id);
 
             // Let it auto-deleted.
@@ -476,7 +501,13 @@ impl EguiBridge {
         }
     }
 
-    fn render_mesh(&mut self, rs: &mut RenderingServer, rid_item: Rid, mesh: egui::Mesh) {
+    fn render_mesh(
+        &mut self,
+        rs: &mut RenderingServer,
+        rid_item: Rid,
+        clip_rect: egui::Rect,
+        mesh: egui::Mesh,
+    ) {
         let Some(texture) = self
             .textures
             .get(&mesh.texture_id)
@@ -486,9 +517,8 @@ impl EguiBridge {
             return;
         };
 
-        // FIXME: Debug Code
-        {
-            for face in mesh.indices.windows(3) {
+        if self.debug_show_vertex_lines {
+            for face in mesh.indices.chunks(3) {
                 let idxs: [_; 3] = std::array::from_fn(|i| face[i] as usize);
                 let v = idxs.map(|i| mesh.vertices[i]);
                 let p = v.map(|v| Vector2::new(v.pos.x, v.pos.y));
@@ -533,33 +563,10 @@ impl EguiBridge {
             *dst = *src as i32;
         }
 
-        let mut gd_mesh = engine::ArrayMesh::new_gd();
-        let mut arrays = VariantArray::new();
-
-        use engine::mesh::ArrayType as AT;
-
-        arrays.resize(AT::MAX.ord() as _);
-
-        arrays.set(AT::VERTEX.ord() as _, verts.to_variant());
-        arrays.set(AT::TEX_UV.ord() as _, uvs.to_variant());
-        arrays.set(AT::COLOR.ord() as _, colors.to_variant());
-        arrays.set(AT::INDEX.ord() as _, indices.to_variant());
-
-        type AF = engine::mesh::ArrayFormat;
-
-        gd_mesh
-            .add_surface_from_arrays_ex(engine::mesh::PrimitiveType::TRIANGLES, arrays)
-            .flags(AF::FLAG_USE_2D_VERTICES)
+        rs.canvas_item_add_triangle_array_ex(rid_item, indices, verts, colors)
+            .texture(texture.get_rid())
+            .uvs(uvs)
             .done();
-
-        // godot_print!("surface len:{}", gd_mesh.surface_get_array_len(0));
-
-        // self.gd_drawer.add_child(mesh_instance.upcast());
-
-        // self.gd_drawer.draw_mesh(gd_mesh.upcast(), texture.upcast());
-        gd_mesh.get_rid();
-
-        // TODO: Create canvas items for each mesh and add them as viewport item.
     }
 
     fn spawn_viewport(
@@ -686,13 +693,6 @@ impl ViewportContext {
     }
 }
 
-/* ------------------------------------------ Windowing ----------------------------------------- */
-
-struct WindowEventItem {
-    id: ViewportId,
-    ev: egui::ViewportCommand,
-}
-
 /* ---------------------------------------------------------------------------------------------- */
 /*                                        VIEWPORT CONTROL                                        */
 /* ---------------------------------------------------------------------------------------------- */
@@ -737,6 +737,9 @@ impl IControl for EguiViewportIoBridge {
                     input.focused = Some(false);
                 }
             }
+            ControlNotification::Resized => {
+                self.request_repaint();
+            }
             _ => (),
         }
     }
@@ -747,17 +750,6 @@ impl IControl for EguiViewportIoBridge {
             base.set_mouse_filter(engine::control::MouseFilter::STOP);
             base.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
         }
-        // This should be able to accept focus, when clicked.
-        let ctx = self.share.ctx.clone();
-        let self_id = self.self_id;
-
-        self.base_mut().connect(
-            StringName::from_latin1_with_nul(b"resized\0"),
-            Callable::from_fn("Resize Observer", move |_vars| {
-                ctx.request_repaint_of(self_id);
-                Ok(Variant::nil())
-            }),
-        );
     }
 
     fn draw(&mut self) {
@@ -862,7 +854,7 @@ impl EguiViewportIoBridge {
 /* ------------------------------------------ Utilities ----------------------------------------- */
 
 fn to_egui_pos(pos: Vector2) -> egui::Pos2 {
-    egui::pos2(pos.x as f32, pos.y as f32)
+    egui::pos2(pos.x, pos.y)
 }
 
 fn to_egui_rect(rect: Rect2) -> egui::Rect {
