@@ -87,7 +87,8 @@ struct SpawnedViewportContext {
     /// Should spawned viewport be closed?
     dispose: Arc<AtomicBool>,
 
-    init: egui::ViewportBuilder,
+    /// Sets at the very first frame.
+    new_init: Option<egui::ViewportBuilder>,
 }
 
 struct ViewportContext {
@@ -99,6 +100,9 @@ struct ViewportContext {
 
     /// Any input captures from viewport.
     rx_update: mpsc::Receiver<painter::ViewportInput>,
+
+    /// Viewport initialization
+    init: egui::ViewportBuilder,
 
     /// Cached viewport information, that we're currently updating on.
     info: egui::ViewportInfo,
@@ -129,8 +133,7 @@ impl EguiBridge {
 /* ------------------------------------- Context Management ------------------------------------- */
 
 type FnBuildWindow = dyn 'static + Send + for<'a> Fn(&'a mut bool) -> egui::Window;
-type FnShowWidget = dyn 'static + Send + FnMut(&egui::Ui) -> bool;
-type FnShowViewport = dyn FnMut(&egui::Context, ViewportClass) -> bool + 'static + Send;
+type FnShowWidget = dyn 'static + Send + Fn(&egui::Ui) -> bool;
 
 /// APIs for spawning viewports.
 ///
@@ -152,13 +155,25 @@ impl EguiBridge {
         &self.share.egui
     }
 
-    /// Spawns a widget, which calls delivered draw function on-demand.
+    /// Spawn a widget on main draw loop.
+    ///
+    /// Passed `config` will be used for creating container window for widget. To control
+    /// window visibility / close behavior, use bool reference parameter to call
+    /// [`egui::Window::open`].
+    ///
+    ///
     pub fn spawn_main_widget(
         &self,
-        window_builder: impl 'static + Send + for<'a> Fn(&'a mut bool) -> egui::Window,
-        draw: impl 'static + Send + FnMut(&egui::Ui) -> bool,
+        config: impl 'static + Send + for<'a> Fn(&'a mut bool) -> egui::Window,
+        show: impl 'static + Send + FnMut(&egui::Ui) -> bool,
     ) {
-        // TODO: Append to widget list
+        let show = Mutex::new(show);
+        self.share.spawned_widgets.lock().pipe(|mut entries| {
+            entries.push(SpawnedWidgetInfo {
+                build_window: Box::new(config),
+                show: Box::new(move |ui| show.lock()(ui)),
+            })
+        });
     }
 
     /// Render viewport for current frame.
@@ -188,8 +203,6 @@ impl EguiBridge {
         builder: ViewportBuilder,
         show: impl FnOnce(&egui::Context, ViewportClass) -> R,
     ) -> R {
-        // TODO: Assert if this is main thread
-
         self.try_start_frame();
         let egui = &self.share.egui;
 
@@ -222,9 +235,24 @@ impl EguiBridge {
         &self,
         id: ViewportId,
         builder: ViewportBuilder,
-        show: impl FnMut(&egui::Context, ViewportClass) -> bool + 'static + Send,
+        show: impl FnMut(&egui::Context) -> bool + 'static + Send + Sync,
     ) {
-        // TODO: Spawn a viewport which is retained as long as show returns true.
+        // Spawn a viewport which is retained as long as show returns true.
+        self.share.spawned_viewports.lock().pipe(|mut table| {
+            let dispose = Arc::new(AtomicBool::new(false));
+            let show_fn = Mutex::new(show);
+
+            table.insert(
+                id,
+                SpawnedViewportContext {
+                    dispose: dispose.clone(),
+                    repaint: Arc::new(move |ctx| {
+                        dispose.store(show_fn.lock()(ctx), std::sync::atomic::Ordering::Relaxed);
+                    }),
+                    new_init: Some(builder),
+                },
+            )
+        });
 
         // Ensure the ui frame gets
         self.queue_try_start_frame();
@@ -339,6 +367,9 @@ impl EguiBridge {
         // TODO: Show all viewports.
 
         // TODO: Paint all viewports
+
+        // Then it's ready to start next frame.
+        self.share.join_frame_fence();
     }
 
     fn viewport_start_frame(&self, id: ViewportId) {
@@ -371,11 +402,6 @@ impl EguiBridge {
         self.to_gd()
             .call_deferred(string_name!(Self, __internal_try_start_frame_inner), &[]);
     }
-
-    fn advance_frame(&self) {
-        let (ref mut current, ref mut requested) = *self.share.fence_frame.lock();
-        *requested = *current;
-    }
 }
 
 impl SharedContext {
@@ -393,5 +419,10 @@ impl SharedContext {
             // Current frame is not yet started.
             false
         }
+    }
+
+    fn join_frame_fence(&self) {
+        let (ref mut current, ref mut requested) = *self.fence_frame.lock();
+        *requested = *current;
     }
 }
