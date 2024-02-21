@@ -360,7 +360,7 @@ impl EguiBridge {
                 viewport.ids.this,
                 Some((viewport.ids.parent, viewport.builder)),
             );
-            assert!(this.viewport_start_frame(viewport.ids.this));
+            this.viewport_start_frame(viewport.ids.this);
 
             (viewport.viewport_ui_cb)(ctx);
             this.viewport_end_frame(viewport.ids.this);
@@ -387,7 +387,7 @@ impl EguiBridge {
 
         // Start root frame as normal.
         self.viewport_validate(egui::ViewportId::ROOT, None);
-        assert!(self.viewport_start_frame(egui::ViewportId::ROOT));
+        self.viewport_start_frame(egui::ViewportId::ROOT);
     }
 
     fn finish_frame(&mut self) {
@@ -410,8 +410,12 @@ impl EguiBridge {
                     };
 
                     if resp.response.gained_focus() || resp.response.clicked() {
-                        // TODO: Check if changing drawing order meaningful.
+                        // 2024-02-22 08:02:10. Check if changing drawing order
+                        // meaningful.
                         // - Seems handled by egui?
+                        // - 2024-02-22 08:02:15. Turns out within single viewport, window
+                        //   ordering is automatically handled by EGUI. Therefore we don't
+                        //   need any specific reordering here.
                     }
 
                     true
@@ -466,8 +470,11 @@ impl EguiBridge {
             .collect::<HashSet<_>>();
 
         let mut viewports = VecDeque::new();
+        let now = Instant::now();
 
         loop {
+            // Not any lock should be held here.
+
             viewports.extend(share.full_output.lock().viewport_output.drain());
 
             let Some((vp_id, vp_out)) = viewports.pop_front() else {
@@ -475,29 +482,42 @@ impl EguiBridge {
             };
 
             if !remaining_viewports.remove(&vp_id) {
+                // FIXME
+
                 // This viewport seems created multiple times ...
                 godot_warn!("Viewport {vp_id:?} declared multiple times from different root");
                 continue;
             }
 
-            if let Some(viewport) = share.viewports.lock().get_mut(&vp_id) {
+            let scheduled = if let Some(viewport) = share.viewports.lock().get_mut(&vp_id) {
                 // Commands are only meaningful when viewport already present.
                 viewport.updates.extend(vp_out.commands);
-            }
+
+                if viewport.repaint_at.is_some_and(|x| x < now) {
+                    viewport.repaint_at = None; // Clear repaint timer until next request
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
 
             // Validate viewport.
             self.viewport_validate(vp_id, Some((vp_out.parent, vp_out.builder)));
 
-            if let Some(ui_cb) = vp_out.viewport_ui_cb {
-                // Other classes than deferred are already initiated
+            if let Some(ui_cb) = vp_out.viewport_ui_cb.filter(|_| scheduled) {
+                // Check if we should repaint this deferred viewport. For root and
+                // immediate viewports, these methods are already invoked!
 
-                if self.viewport_start_frame(vp_id) {
-                    // Populate renderings
-                    ui_cb(&self.share.egui);
-                    self.viewport_end_frame(vp_id);
-                }
+                self.viewport_start_frame(vp_id);
+                // Populate renderings
+                ui_cb(&self.share.egui);
+                self.viewport_end_frame(vp_id);
             }
         }
+
+        // TODO: Handle platform outputs accumulated from all viewports.
 
         // TODO: Cleanup full_output for next frame.
 
@@ -672,7 +692,6 @@ impl EguiBridge {
                 continue;
             };
 
-            // TODO: Apply commands
             match command {
                 Close => {
                     if id == ViewportId::ROOT {
@@ -828,9 +847,7 @@ impl EguiBridge {
         });
     }
 
-    fn viewport_start_frame(&self, id: ViewportId) -> bool {
-        let mut should_render = id == ViewportId::ROOT;
-
+    fn viewport_start_frame(&self, id: ViewportId) {
         // NOTE: Seems recursive call to begin_frame is handled by stack internally.
         let mut raw_input = self.share.raw_input_template.lock().clone();
 
@@ -838,31 +855,17 @@ impl EguiBridge {
             let mut viewport = self.share.viewports.lock();
             let viewport = viewport.get_mut(&id).unwrap();
 
-            // It's highly likely be non-deferred renderer. Force rendering always!
-            should_render |= viewport.repaint_with.is_none();
+            // TODO: Collect input from viewport.
 
             raw_input.screen_rect = viewport.info.inner_rect;
             raw_input.focused = viewport.info.focused.unwrap_or_default();
             raw_input.viewport_id = id;
 
-            // TODO: Collect inputs from given viewport
-
-            // Check rendering schedule ONLY for deferred viewport
-            if !should_render && viewport.repaint_at.is_some_and(|x| Instant::now() < x) {
-                // Only if it's deferred viewport(repaint is set) and repaint schedule not reached;
-                return false;
-            }
-
             // Just set repaint schedule to far future.
             viewport.repaint_at = Some(Instant::now() + Duration::from_secs(3600));
         }
 
-        if should_render {
-            self.share.egui.begin_frame(raw_input);
-            true
-        } else {
-            false
-        }
+        self.share.egui.begin_frame(raw_input);
     }
 
     fn viewport_end_frame(&self, id: ViewportId) {
