@@ -16,15 +16,12 @@ use egui::{
     ViewportClass, ViewportId, ViewportIdMap,
 };
 use godot::{
-    engine::{self, control::LayoutPreset, CanvasLayer, Control, ICanvasLayer, WeakRef},
+    engine::{self, control::LayoutPreset, window, CanvasLayer, Control, ICanvasLayer, WeakRef},
     prelude::*,
 };
 use tap::prelude::{Pipe, Tap};
 
-use crate::{
-    default,
-    painter::{self},
-};
+use crate::{default, helpers::ToCounterpart, painter};
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                             BRIDGE                                             */
@@ -530,13 +527,11 @@ impl EguiBridge {
                     let entry = entry.get_mut();
                     let (patch, recreate) = entry.builder.patch(build);
 
-                    should_rebuild = recreate;
+                    // We don't need to recreate any of viewport -> Godot supports all in
+                    // runtime!
+                    let _ = recreate;
 
-                    if recreate {
-                        entry.updates = patch;
-                    } else {
-                        entry.updates.extend(patch);
-                    }
+                    entry.updates.extend(patch);
                 }
 
                 entry.into_mut()
@@ -668,40 +663,84 @@ impl EguiBridge {
                         dispose.store(false, Relaxed);
                     }
                 }
-                Title(new_title) => {}
-                Transparent(_) => todo!(),
-                Visible(_) => todo!(),
-                StartDrag => todo!(),
-                OuterPosition(_) => todo!(),
-                InnerSize(_) => todo!(),
-                MinInnerSize(_) => todo!(),
-                MaxInnerSize(_) => todo!(),
-                ResizeIncrements(_) => todo!(),
-                BeginResize(_) => todo!(),
-                Resizable(_) => todo!(),
-                EnableButtons {
-                    close,
-                    minimized,
-                    maximize,
-                } => todo!(),
-                Minimized(_) => todo!(),
-                Maximized(_) => todo!(),
-                Fullscreen(_) => todo!(),
-                Decorations(_) => todo!(),
-                WindowLevel(_) => todo!(),
-                Icon(_) => todo!(),
-                IMERect(_) => todo!(),
-                IMEAllowed(_) => todo!(),
-                IMEPurpose(_) => todo!(),
-                Focus => todo!(),
-                RequestUserAttention(_) => todo!(),
-                SetTheme(_) => todo!(),
-                ContentProtected(_) => todo!(),
-                CursorPosition(_) => todo!(),
-                CursorGrab(_) => todo!(),
-                CursorVisible(_) => todo!(),
-                MousePassthrough(_) => todo!(),
-                Screenshot => todo!(),
+                Title(new_title) => {
+                    window.set_title(new_title.into());
+                }
+                Transparent(transparent) => {
+                    window.set_transparent_background(transparent);
+                }
+                Visible(visible) => {
+                    window.set_visible(visible);
+                }
+                StartDrag => {
+                    // TODO: Implement this
+                    //
+                    // Set viewport.dragging = true; then until it finishes dragging, get
+                    // mouse delta then move the window.
+                }
+                OuterPosition(pos) => window.set_position(pos.to_alternative()),
+                InnerSize(size) => window.set_size(size.to_alternative()),
+                MinInnerSize(size) => window.set_min_size(size.to_alternative()),
+                MaxInnerSize(size) => window.set_max_size(size.to_alternative()),
+                ResizeIncrements(Some(incr)) => {
+                    let size = window.get_size();
+                    let new_size = size + incr.to_alternative();
+                    window.set_size(new_size);
+                }
+                ResizeIncrements(None) => {}
+                BeginResize(_) => {
+                    // TODO: Implement this
+                }
+                Resizable(value) => window.set_flag(window::Flags::RESIZE_DISABLED, !value),
+                EnableButtons { .. } => {}
+                Minimized(true) => window.set_mode(window::Mode::MINIMIZED),
+                Minimized(_) => {}
+                Maximized(true) => window.set_mode(window::Mode::MAXIMIZED),
+                Maximized(_) => {}
+                Fullscreen(true) => window.set_mode(window::Mode::FULLSCREEN),
+                Fullscreen(_) => {}
+                Decorations(deco) => window.set_flag(window::Flags::BORDERLESS, !deco),
+                WindowLevel(level) => {
+                    let enabled = match level {
+                        egui::WindowLevel::AlwaysOnBottom | egui::WindowLevel::Normal => false,
+                        egui::WindowLevel::AlwaysOnTop => true,
+                    };
+
+                    window.set_flag(window::Flags::ALWAYS_ON_TOP, enabled);
+                }
+                Icon(_) => {
+                    // TODO: Find way to handle this.
+                }
+                IMERect(rect) => {
+                    window.set_ime_position(rect.to_alternative().position);
+                }
+                IMEAllowed(allowed) => {
+                    window.set_ime_active(allowed);
+                }
+                IMEPurpose(_why) => {
+                    // TODO: How?
+                }
+                Focus => {
+                    window.grab_focus();
+                }
+                RequestUserAttention(_) => {
+                    // No way?
+                }
+                SetTheme(_) => {
+                    // How?
+                }
+                ContentProtected(_) => {}
+                CursorPosition(_pos) => {}
+                CursorGrab(_) => {}
+                CursorVisible(_) => {
+                    // TODO
+                }
+                MousePassthrough(enabled) => {
+                    window.set_flag(window::Flags::MOUSE_PASSTHROUGH, enabled);
+                }
+                Screenshot => {
+                    // TODO: How?
+                }
             }
         }
 
