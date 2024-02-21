@@ -1,4 +1,5 @@
 use std::{
+    collections::hash_map,
     mem::take,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
@@ -20,7 +21,7 @@ use godot::{
 };
 use tap::prelude::{Pipe, Tap};
 
-use crate::painter;
+use crate::painter::{self, ViewportInput};
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                             BRIDGE                                             */
@@ -33,8 +34,13 @@ pub struct EguiBridge {
     base: Base<engine::CanvasLayer>,
     share: Arc<SharedContext>,
 
-    /// Access to this variable should to be main-thread only.
-    control_outputs: FullOutput,
+    /// Number of bits allowed for texture size.
+    ///
+    /// The texture will be 2^max_texture_size
+    #[export]
+    #[var(get, set)]
+    #[init(default = 13)]
+    pub max_texture_bits: u8,
 
     /// Actual Godot Nodes for realization of viewports.
     painters: ViewportIdMap<PainterContext>,
@@ -105,11 +111,15 @@ struct ViewportContext {
     /// Viewport initialization
     builder: egui::ViewportBuilder,
 
-    /// Viewport commands pending apply.
-    updates: (Vec<egui::ViewportCommand>, bool),
+    /// Viewport commands pending apply. When should be recreated, the second parameter
+    /// set to [`Some`].
+    updates: (
+        Vec<egui::ViewportCommand>,
+        Option<mpsc::Sender<painter::ViewportInput>>,
+    ),
 
     /// Paint commands that is being applied,
-    paint: oneshot::Receiver<Vec<egui::ClippedPrimitive>>,
+    paint_this_frame: Option<oneshot::Receiver<Vec<egui::ClippedPrimitive>>>,
 
     /// Cached viewport information, that we're currently updating on.
     info: egui::ViewportInfo,
@@ -337,7 +347,7 @@ impl EguiBridge {
                 return;
             }
 
-            this.viewport_start_frame(viewport.ids.this, Some(viewport.builder));
+            assert!(this.viewport_start_frame(viewport.ids.this, Some(viewport.builder)));
             (viewport.viewport_ui_cb)(ctx);
             this.viewport_end_frame(viewport.ids.this);
         });
@@ -353,12 +363,16 @@ impl EguiBridge {
                     .collect::<egui::ViewportIdMap<_>>()
             })
             .pipe(|vp| {
-                let mut inputs = share.raw_input_template.lock();
-                inputs.viewports = vp;
+                let mut inp = share.raw_input_template.lock();
+                inp.viewports = vp;
+                inp.time = Some(engine::Time::singleton().get_ticks_usec() as f64 / 1e6);
+
+                // XXX: 256~ 65536 texture size limitation => is this practical?
+                inp.max_texture_side = Some(1 << (self.max_texture_bits as usize).clamp(8, 16));
             });
 
         // Start root frame as normal.
-        self.viewport_start_frame(egui::ViewportId::ROOT, None);
+        assert!(self.viewport_start_frame(egui::ViewportId::ROOT, None));
     }
 
     fn finish_frame(&mut self) {
@@ -436,24 +450,103 @@ impl EguiBridge {
 
         // TODO: Paint all viewports
 
+        // TODO: Handle disposed textures from output.
+
         // Then it's ready to start next frame.
         self.share.join_frame_fence();
     }
 
-    fn viewport_start_frame(&self, id: ViewportId, build: Option<ViewportBuilder>) {
-        // NOTE: Seems recursive call to begin_frame is handled by stack internally.
+    fn viewport_start_frame(&self, id: ViewportId, build: Option<ViewportBuilder>) -> bool {
+        // TODO: Check schedule; if it's okay to start rendering.
+        let mut should_render = id == ViewportId::ROOT;
 
-        // TODO: Spawn context if viewport id not exist
+        // NOTE: Seems recursive call to begin_frame is handled by stack internally.
+        let mut raw_input = self.share.raw_input_template.lock().clone();
+
+        // Spawn context if viewport id not exist
+        let mut viewport_lock = self.share.viewports.lock();
+        let viewport = match viewport_lock.entry(id) {
+            hash_map::Entry::Occupied(mut entry) => {
+                if let Some(build) = build {
+                    let entry = entry.get_mut();
+                    let (patch, recreate) = entry.builder.patch(build);
+
+                    if recreate || !patch.is_empty() {
+                        should_render |= true;
+                    }
+
+                    if recreate {
+                        // Que recreation
+                        let (tx_update, rx_update) = mpsc::channel();
+
+                        entry.updates.0 = patch;
+                        entry.updates.1 = Some(tx_update);
+                        entry.rx_update = rx_update;
+                    } else {
+                        entry.updates.0.extend(patch);
+                    }
+                }
+
+                entry.into_mut()
+            }
+            hash_map::Entry::Vacant(entry) => {
+                should_render |= true;
+
+                let (tx_update, rx_update) = mpsc::channel();
+                let mut init = ViewportBuilder::default();
+
+                let (updates, _) = build.map(|x| init.patch(x)).unwrap_or_default();
+
+                entry.insert(ViewportContext {
+                    repaint_at: Some(Instant::now()),
+                    repaint_with: None,
+                    rx_update,
+                    builder: init,
+                    updates: (updates, Some(tx_update)),
+                    paint_this_frame: None,
+                    info: Default::default(),
+                })
+            }
+        };
+
+        // It's highly likely be non-deferred renderer. Force rendering always!
+        should_render |= viewport.repaint_with.is_none();
+
+        raw_input.screen_rect = viewport.info.inner_rect;
+        raw_input.focused = viewport.info.focused.unwrap_or_default();
+        raw_input.viewport_id = id;
 
         // TODO: Collect inputs from given viewport
+
+        // Check rendering schedule for deferred viewport
+        if !should_render && viewport.repaint_at.is_some_and(|x| Instant::now() < x) {
+            // Only if it's deferred viewport(repaint is set) and repaint schedule not reached;
+            return false;
+        }
+
+        // Release lock first.
+        drop(viewport_lock);
+
+        if should_render {
+            self.share.egui.begin_frame(raw_input);
+            true
+        } else {
+            false
+        }
     }
 
     fn viewport_end_frame(&self, id: ViewportId) {
-        // TODO: Call UI callback if needed.
+        // TODO: Retrieve viewport-wise output.
+
+        // TODO: Que async tesselation jobs to Rayon.
+
+        // TODO: Accumulate outputs to main output.
     }
 
     fn paint_viewport(&mut self, id: ViewportId) {
-        // TODO:
+        // TODO: Spawn viewport node if not found from painters.
+
+        // TODO: From tesselation result, draw painter.
     }
 
     /// Start frame in thread-safe manner.
