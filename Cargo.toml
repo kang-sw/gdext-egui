@@ -10,3 +10,9 @@ egui = "0.26"
 itertools = "0.12"
 
 crossbeam-queue = "0.3"
+oneshot = "0.1"
+
+tap = "1"
+
+derive_setters = "0.1"
+derive-new = "0.6"
