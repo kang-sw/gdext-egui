@@ -8,11 +8,6 @@ macro_rules! string_name {
         $crate::string_name!(#[set], str)
     }};
 
-
-    ($name:literal) => {
-        $crate::string_name!(#[set], concat!($name, "\0").as_bytes())
-    };
-
     (#[str], $id:expr) => {
         concat!(stringify!($ident), "\0").as_bytes()
     };
@@ -25,7 +20,7 @@ macro_rules! string_name {
     };
 }
 
-mod context;
+pub mod context;
 mod painter;
 
 pub extern crate egui;

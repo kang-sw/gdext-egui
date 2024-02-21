@@ -1,16 +1,25 @@
 use std::{
-    sync::{atomic::AtomicU64, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU64},
+        mpsc, Arc,
+    },
     thread::ThreadId,
+    time::Instant,
 };
 
-use derive_new::new;
 use derive_setters::Setters;
-use egui::{ahash::HashMap, mutex::Mutex, ViewportBuilder, ViewportClass, ViewportId};
+use educe::Educe;
+use egui::{
+    ahash::HashMap, mutex::Mutex, DeferredViewportUiCallback, FullOutput, ViewportBuilder,
+    ViewportClass, ViewportId, ViewportIdMap,
+};
 use godot::{
-    engine::{self, CanvasLayer, ICanvasLayer, WeakRef},
+    engine::{self, CanvasLayer, Control, ICanvasLayer, WeakRef},
     prelude::*,
 };
 use tap::prelude::{Pipe, Tap};
+
+use crate::painter;
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                             BRIDGE                                             */
@@ -21,22 +30,78 @@ use tap::prelude::{Pipe, Tap};
 #[class(base=CanvasLayer, init, rename=GodotEguiBridge)]
 pub struct EguiBridge {
     base: Base<engine::CanvasLayer>,
+    share: Arc<SharedContext>,
 
-    #[init(default = Arc::new(Context::new()))]
-    share: Arc<Context>,
+    /// Access to this variable should to be main-thread only.
+    control_outputs: FullOutput,
+
+    /// Actual Godot Nodes for realization of viewports.
+    painters: ViewportIdMap<PainterContext>,
 }
 
-#[derive(new)]
-struct Context {
-    #[new(default)]
+struct PainterContext {
+    /// Actual painter window.
+    painter: Gd<painter::EguiViewportBridge>,
+
+    /// Container window if exist. (All widgets without root)
+    window: Option<Gd<engine::Window>>,
+}
+
+#[derive(Educe)]
+#[educe(Default)]
+struct SharedContext {
     egui: egui::Context,
-    #[new(default)]
-    viewports: Arc<Mutex<HashMap<ViewportId, ViewportContext>>>,
-    #[new(default)]
+
+    /// Detects whether to start new frame.
     fence_frame: Arc<Mutex<(u64, u64)>>,
 
-    #[new(value = "std::thread::current().id()")]
+    /// Template input for each viewport rendering.
+    raw_input_template: Mutex<egui::RawInput>,
+
+    /// Accumulated output for entire single frame.
+    full_output: Mutex<egui::FullOutput>,
+
+    /// List of widgets that is tracked by this context.
+    spawned_widgets: Arc<Mutex<Vec<SpawnedWidgetInfo>>>,
+
+    /// List of viewports that is tracked by this context.
+    spawned_viewports: Mutex<ViewportIdMap<SpawnedViewportContext>>,
+
+    /// List of viewports that
+    viewports: Mutex<ViewportIdMap<ViewportContext>>,
+
+    /// The thread ID that instance was initiated.
+    #[educe(Default = std::thread::current().id())]
     main_thread_id: ThreadId,
+}
+
+struct SpawnedWidgetInfo {
+    build_window: Box<FnBuildWindow>,
+    show: Box<FnShowWidget>,
+}
+
+struct SpawnedViewportContext {
+    /// Captures `dispose`, then set it to false when viewport closed.
+    repaint: Arc<DeferredViewportUiCallback>,
+
+    /// Should spawned viewport be closed?
+    dispose: Arc<AtomicBool>,
+
+    init: egui::ViewportBuilder,
+}
+
+struct ViewportContext {
+    /// Repainted when time point reaches here.
+    repaint_at: Option<Instant>,
+
+    /// Repaint method, that will be called when ready.
+    repaint_with: Option<Arc<DeferredViewportUiCallback>>,
+
+    /// Any input captures from viewport.
+    rx_update: mpsc::Receiver<painter::ViewportInput>,
+
+    /// Cached viewport information, that we're currently updating on.
+    info: egui::ViewportInfo,
 }
 
 /* ------------------------------------------ Godot Api ----------------------------------------- */
@@ -56,12 +121,16 @@ impl EguiBridge {
     }
 
     #[func]
-    fn __internal_finish_frame_inner(&self) {
+    fn __internal_finish_frame_inner(&mut self) {
         self.finish_frame();
     }
 }
 
 /* ------------------------------------- Context Management ------------------------------------- */
+
+type FnBuildWindow = dyn 'static + Send + for<'a> Fn(&'a mut bool) -> egui::Window;
+type FnShowWidget = dyn 'static + Send + FnMut(&egui::Ui) -> bool;
+type FnShowViewport = dyn FnMut(&egui::Context, ViewportClass) -> bool + 'static + Send;
 
 /// APIs for spawning viewports.
 ///
@@ -180,8 +249,6 @@ impl EguiBridge {
                     share.repaint(repaint);
                 }
             });
-
-            egui::Context::set_immediate_viewport_renderer(|ctx, viewport| {});
         });
     }
 
@@ -205,15 +272,88 @@ impl EguiBridge {
 
         // End of this frame, `finish_frame` will
         timer.connect(
-            string_name!("timeout"),
+            "timeout".into(),
             Callable::from_object_method(
                 &self.to_gd(),
                 string_name!(Self, __internal_finish_frame_inner),
             ),
         );
+
+        // Register immediate renderer for this frame.
+        let w_self = utilities::weakref(self.to_gd().to_variant());
+        egui::Context::set_immediate_viewport_renderer(move |ctx, viewport| {
+            let Ok(this) = w_self.try_to::<Gd<WeakRef>>() else {
+                unreachable!();
+            };
+
+            let Ok(this) = this.get_ref().try_to::<Gd<Self>>() else {
+                // It's just expired.
+                return;
+            };
+
+            let this = this.bind();
+
+            let p_src = this.share.egui.input(|x| x as *const _);
+            let p_new = ctx.input(|x| x as *const _);
+
+            if p_src != p_new {
+                // Another EGUI runtime?
+                return;
+            }
+
+            this.viewport_start_frame(viewport.ids.this);
+            (viewport.viewport_ui_cb)(ctx);
+            this.viewport_end_frame(viewport.ids.this);
+        });
+
+        // Gather global input information
+        let share = self.share.clone();
+        share
+            .viewports
+            .lock()
+            .pipe(|vp| {
+                vp.iter()
+                    .map(|(id, value)| (*id, value.info.clone()))
+                    .collect::<egui::ViewportIdMap<_>>()
+            })
+            .pipe(|vp| {
+                let mut inputs = share.raw_input_template.lock();
+                inputs.viewports = vp;
+            });
+
+        // Start root frame as normal.
+        self.viewport_start_frame(egui::ViewportId::ROOT);
     }
 
-    fn finish_frame(&self) {
+    fn finish_frame(&mut self) {
+        // TODO: Show main frame widgets
+
+        // TODO: End main frame loop.
+
+        // TODO: Validate deferred spawned viewport (won't be shown immediately)
+
+        // TODO: Handle viewport changes from output.
+
+        // TODO: Handle new textures from output.
+
+        // TODO: Show all viewports.
+
+        // TODO: Paint all viewports
+    }
+
+    fn viewport_start_frame(&self, id: ViewportId) {
+        // NOTE: Seems recursive call to begin_frame is handled by stack internally.
+
+        // TODO: Spawn context if viewport id not exist
+
+        // TODO: Collect inputs from given viewport
+    }
+
+    fn viewport_end_frame(&self, id: ViewportId) {
+        // TODO: Call UI callback if needed.
+    }
+
+    fn paint_viewport(&mut self, id: ViewportId) {
         // TODO:
     }
 
@@ -238,8 +378,10 @@ impl EguiBridge {
     }
 }
 
-impl Context {
-    fn repaint(&self, info: egui::RequestRepaintInfo) {}
+impl SharedContext {
+    fn repaint(&self, info: egui::RequestRepaintInfo) {
+        // TODO: Find viewport context, update repaint timing.
+    }
 
     fn try_advance_frame_fence(&self) -> bool {
         let (ref mut current, ref mut requested) = *self.fence_frame.lock();
@@ -253,7 +395,3 @@ impl Context {
         }
     }
 }
-
-/* ------------------------------------------ Viewport ------------------------------------------ */
-
-struct ViewportContext {}

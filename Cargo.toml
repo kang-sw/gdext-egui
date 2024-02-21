@@ -15,4 +15,4 @@ oneshot = "0.1"
 tap = "1"
 
 derive_setters = "0.1"
-derive-new = "0.6"
+educe = "0.5"
