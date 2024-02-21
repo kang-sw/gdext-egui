@@ -16,14 +16,14 @@ use egui::{
     ViewportClass, ViewportId, ViewportIdMap,
 };
 use godot::{
-    engine::{self, CanvasLayer, Control, ICanvasLayer, WeakRef},
+    engine::{self, control::LayoutPreset, CanvasLayer, Control, ICanvasLayer, WeakRef},
     prelude::*,
 };
 use tap::prelude::{Pipe, Tap};
 
 use crate::{
     default,
-    painter::{self, ViewportInput},
+    painter::{self},
 };
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -113,10 +113,13 @@ struct ViewportContext {
     repaint_with: Option<Arc<DeferredViewportUiCallback>>,
 
     /// Any input captures from viewport.
-    rx_update: mpsc::Receiver<painter::ViewportInput>,
+    rx_update: mpsc::Receiver<egui::Event>,
 
     /// Viewport initialization
     builder: egui::ViewportBuilder,
+
+    /// Dispose context, if this is spawned viewport.
+    dispose: Option<Arc<AtomicBool>>,
 
     /// Viewport commands pending apply. When should be recreated, the second parameter
     /// set to [`Some`].
@@ -269,7 +272,7 @@ impl EguiBridge {
                 SpawnedViewportContext {
                     dispose: dispose.clone(),
                     repaint: Arc::new(move |ctx| {
-                        dispose.store(show_fn.lock()(ctx), Relaxed);
+                        dispose.fetch_or(show_fn.lock()(ctx), Relaxed);
                     }),
                     builder,
                 },
@@ -449,7 +452,7 @@ impl EguiBridge {
         // End main frame loop.
         self.viewport_end_frame(egui::ViewportId::ROOT);
 
-        // TODO: Handle viewport changes from output, visit each viewports
+        // Handle viewport changes from output, visit each viewports
         let mut remaining_viewports = share
             .viewports
             .lock()
@@ -510,6 +513,14 @@ impl EguiBridge {
         // Checkout painter
         let mut painter = self.painters.lock().remove(&id);
 
+        // Check if this is from spawned viewports
+        let spawned_dispose = self
+            .share
+            .spawned_viewports
+            .lock()
+            .get(&id)
+            .map(|x| x.dispose.clone());
+
         // Spawn context if viewport id not exist
         let mut should_rebuild = false;
         let mut viewport_lock = self.share.viewports.lock();
@@ -533,7 +544,8 @@ impl EguiBridge {
             hash_map::Entry::Vacant(entry) => {
                 should_rebuild = true;
 
-                let (tx_update, rx_update) = mpsc::channel();
+                // Just throw away this ... it'll be replaced by new one.
+                let (_tx_update, rx_update) = mpsc::channel();
                 let mut init = ViewportBuilder::default();
 
                 let (updates, _) = build.map(|x| init.patch(x)).unwrap_or_default();
@@ -541,6 +553,7 @@ impl EguiBridge {
                 entry.insert(ViewportContext {
                     repaint_at: Some(Instant::now()),
                     repaint_with: None,
+                    dispose: spawned_dispose,
                     rx_update,
                     builder: init,
                     updates,
@@ -553,18 +566,153 @@ impl EguiBridge {
         if painter.is_none() || should_rebuild {
             drop(painter.take());
 
-            // TODO: Rebuild UI.
+            // Create channel between new viewport and painter.
+            let (tx_viewport, rx_viewport) = mpsc::channel();
+            viewport.rx_update = rx_viewport;
+
+            // Rebuild UI.
+            let mut gd_painter = painter::EguiViewportBridge::new_alloc();
+            gd_painter.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
+
+            let ctx = self.share.egui.clone();
+            gd_painter.bind_mut().initiate(Box::new(move |ev| {
+                // NOTE: cloning egui context into this closure doesn't make cyclic reference
+                // - Both are field of `Self`, which does not refer to each other.
+
+                tx_viewport.send(ev).ok(); // Failing this is just okay.
+                ctx.request_repaint_of(id);
+            }));
+
+            // TODO: Bind `gd_painter.resized()`
+
+            let gd_wnd = if id == ViewportId::ROOT {
+                // Attach directly to this component.
+                self.to_gd().add_child(gd_painter.clone().upcast());
+                gd_painter.set_owner(self.to_gd().upcast());
+
+                None
+            } else {
+                let builder = &viewport.builder;
+
+                // Spawn additional window to hold painter.
+                let mut gd_wnd = engine::Window::new_alloc();
+
+                self.to_gd().add_child(gd_wnd.clone().upcast());
+                gd_wnd.set_owner(self.to_gd().upcast());
+
+                gd_wnd.add_child(gd_painter.clone().upcast());
+                gd_painter.set_owner(gd_wnd.clone().upcast());
+
+                // TODO: Bind `gd_wnd.close_requested`
+
+                // NOTE: List of recreation-only flags
+                // - active
+                // - app_id
+                // - close_button
+                // - minimize_button
+                // - maximize_button
+                // - title_shown
+                // - titlebar_buttons_shown
+                // - titlebar_shown
+                // - fullsize_content_view
+                // - drag_and_drop
+
+                use engine::window::Flags;
+
+                if builder.active.is_some_and(|x| x) {
+                    gd_wnd.grab_focus();
+                }
+
+                if builder.titlebar_shown.is_some_and(|x| !x) {
+                    gd_wnd.set_flag(Flags::BORDERLESS, true);
+                }
+
+                Some(gd_wnd)
+            };
+
+            painter = Some(PainterContext {
+                painter: gd_painter,
+                window: gd_wnd,
+            });
         }
+
+        let Some(painter) = painter else {
+            unreachable!()
+        };
 
         for command in viewport.updates.drain(..) {
+            use egui::ViewportCommand::*;
+
+            let Some(mut window) = painter.window.clone() else {
+                // Root viewport won't receive any viewport commands.
+                continue;
+            };
+
             // TODO: Apply commands
+            match command {
+                Close => {
+                    if id == ViewportId::ROOT {
+                        // Ignore close signal to root ... It's simply not allowed!
+                        godot_warn!("Root viewport received close request!");
+                    } else if let Some(dispose) = &viewport.dispose {
+                        // Close the window.
+                        dispose.store(true, Relaxed);
+                    } else {
+                        // In any other cases; close signal is ignored. User can easily
+                        // dispose the viewport by not calling `show_viewport_deferred`
+                    }
+                }
+                CancelClose => {
+                    if let Some(dispose) = &viewport.dispose {
+                        // Cancel the close signal.
+                        dispose.store(false, Relaxed);
+                    }
+                }
+                Title(new_title) => {}
+                Transparent(_) => todo!(),
+                Visible(_) => todo!(),
+                StartDrag => todo!(),
+                OuterPosition(_) => todo!(),
+                InnerSize(_) => todo!(),
+                MinInnerSize(_) => todo!(),
+                MaxInnerSize(_) => todo!(),
+                ResizeIncrements(_) => todo!(),
+                BeginResize(_) => todo!(),
+                Resizable(_) => todo!(),
+                EnableButtons {
+                    close,
+                    minimized,
+                    maximize,
+                } => todo!(),
+                Minimized(_) => todo!(),
+                Maximized(_) => todo!(),
+                Fullscreen(_) => todo!(),
+                Decorations(_) => todo!(),
+                WindowLevel(_) => todo!(),
+                Icon(_) => todo!(),
+                IMERect(_) => todo!(),
+                IMEAllowed(_) => todo!(),
+                IMEPurpose(_) => todo!(),
+                Focus => todo!(),
+                RequestUserAttention(_) => todo!(),
+                SetTheme(_) => todo!(),
+                ContentProtected(_) => todo!(),
+                CursorPosition(_) => todo!(),
+                CursorGrab(_) => todo!(),
+                CursorVisible(_) => todo!(),
+                MousePassthrough(_) => todo!(),
+                Screenshot => todo!(),
+            }
         }
 
-        // Checkin painter
+        // Update viewport input from painter output.
+
+        // Viewport should be released first.
         drop(viewport_lock);
 
-        self.painters.lock().tap_mut(|x| {
-            x.entry(id).or_insert(painter.expect("not initiated"));
+        // Checkin painter
+        self.painters.lock().pipe(|mut x| {
+            x.entry(id).or_insert(painter);
         });
     }
 

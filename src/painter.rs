@@ -18,8 +18,6 @@ impl TextureLibrary {
 
 /* ------------------------------------------ Viewport ------------------------------------------ */
 
-pub struct ViewportInput {}
-
 /// Represents a spawned viewport
 #[derive(GodotClass)]
 #[class(base=Control, init, hidden, rename=INTERNAL__GodotEguiViewportBridge)]
@@ -28,7 +26,7 @@ pub(crate) struct EguiViewportBridge {
 }
 
 impl EguiViewportBridge {
-    pub fn initiate(&mut self, id: egui::ViewportId, tx: mpsc::Sender<ViewportInput>) {
+    pub fn initiate(&mut self, on_event: Box<dyn Fn(egui::Event)>) {
         todo!()
     }
 
