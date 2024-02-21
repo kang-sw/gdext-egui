@@ -120,10 +120,7 @@ struct ViewportContext {
 
     /// Viewport commands pending apply. When should be recreated, the second parameter
     /// set to [`Some`].
-    updates: (
-        Vec<egui::ViewportCommand>,
-        Option<mpsc::Sender<painter::ViewportInput>>,
-    ),
+    updates: Vec<egui::ViewportCommand>,
 
     /// Paint commands that is being applied,
     paint_this_frame: Option<oneshot::Receiver<Vec<egui::ClippedPrimitive>>>,
@@ -354,11 +351,9 @@ impl EguiBridge {
                 return;
             }
 
-            assert!(this.viewport_start_frame(
-                viewport.ids.this,
-                Some(viewport.builder),
-                default()
-            ));
+            this.viewport_validate(viewport.ids.this, Some(viewport.builder));
+            assert!(this.viewport_start_frame(viewport.ids.this));
+
             (viewport.viewport_ui_cb)(ctx);
             this.viewport_end_frame(viewport.ids.this);
         });
@@ -383,7 +378,8 @@ impl EguiBridge {
             });
 
         // Start root frame as normal.
-        assert!(self.viewport_start_frame(egui::ViewportId::ROOT, None, default()));
+        self.viewport_validate(egui::ViewportId::ROOT, None);
+        assert!(self.viewport_start_frame(egui::ViewportId::ROOT));
     }
 
     fn finish_frame(&mut self) {
@@ -476,7 +472,24 @@ impl EguiBridge {
                 continue;
             }
 
-            // TODO: Deal with commands ...
+            if let Some(viewport) = share.viewports.lock().get_mut(&vp_id) {
+                // Commands are only meaningful when viewport already present.
+                viewport.updates.extend(vp_out.commands);
+            }
+
+            // Validate viewport.
+            self.viewport_validate(vp_id, Some(vp_out.builder));
+
+            if let Some(ui_cb) = vp_out.viewport_ui_cb {
+                // Other classes are already initiated
+
+                if self.viewport_start_frame(vp_id) {
+                    // Viewport start command only returns false when it's deferred.
+
+                    ui_cb(&self.share.egui);
+                    self.viewport_end_frame(vp_id);
+                }
+            }
         }
 
         // TODO: Cleanup full_output for next frame.
@@ -493,19 +506,12 @@ impl EguiBridge {
         self.share.join_frame_fence();
     }
 
-    fn viewport_start_frame(
-        &self,
-        id: ViewportId,
-        build: Option<ViewportBuilder>,
-        commands: Vec<egui::ViewportCommand>,
-    ) -> bool {
-        // TODO: Check schedule; if it's okay to start rendering.
-        let mut should_render = id == ViewportId::ROOT;
-
-        // NOTE: Seems recursive call to begin_frame is handled by stack internally.
-        let mut raw_input = self.share.raw_input_template.lock().clone();
+    fn viewport_validate(&self, id: ViewportId, build: Option<ViewportBuilder>) {
+        // Checkout painter
+        let mut painter = self.painters.lock().remove(&id);
 
         // Spawn context if viewport id not exist
+        let mut should_rebuild = false;
         let mut viewport_lock = self.share.viewports.lock();
         let viewport = match viewport_lock.entry(id) {
             hash_map::Entry::Occupied(mut entry) => {
@@ -513,26 +519,19 @@ impl EguiBridge {
                     let entry = entry.get_mut();
                     let (patch, recreate) = entry.builder.patch(build);
 
-                    if recreate || !patch.is_empty() {
-                        should_render |= true;
-                    }
+                    should_rebuild = recreate;
 
                     if recreate {
-                        // Que recreation
-                        let (tx_update, rx_update) = mpsc::channel();
-
-                        entry.updates.0 = patch;
-                        entry.updates.1 = Some(tx_update);
-                        entry.rx_update = rx_update;
+                        entry.updates = patch;
                     } else {
-                        entry.updates.0.extend(patch);
+                        entry.updates.extend(patch);
                     }
                 }
 
                 entry.into_mut()
             }
             hash_map::Entry::Vacant(entry) => {
-                should_render |= true;
+                should_rebuild = true;
 
                 let (tx_update, rx_update) = mpsc::channel();
                 let mut init = ViewportBuilder::default();
@@ -544,19 +543,38 @@ impl EguiBridge {
                     repaint_with: None,
                     rx_update,
                     builder: init,
-                    updates: (updates, Some(tx_update)),
+                    updates,
                     paint_this_frame: None,
                     info: default(),
                 })
             }
         };
 
-        // Spawn or update viewport
-        viewport.updates.0.extend(commands);
+        if painter.is_none() || should_rebuild {
+            drop(painter.take());
 
-        let mut painter = self.painters.lock().entry(id);
+            // TODO: Rebuild UI.
+        }
 
-        // Check if we have to create new
+        for command in viewport.updates.drain(..) {
+            // TODO: Apply commands
+        }
+
+        // Checkin painter
+        drop(viewport_lock);
+
+        self.painters.lock().tap_mut(|x| {
+            x.entry(id).or_insert(painter.expect("not initiated"));
+        });
+    }
+
+    fn viewport_start_frame(&self, id: ViewportId) -> bool {
+        let mut should_render = id == ViewportId::ROOT;
+
+        // NOTE: Seems recursive call to begin_frame is handled by stack internally.
+        let mut raw_input = self.share.raw_input_template.lock().clone();
+
+        let viewport = &self.share.viewports.lock()[&id];
 
         // It's highly likely be non-deferred renderer. Force rendering always!
         should_render |= viewport.repaint_with.is_none();
@@ -567,7 +585,7 @@ impl EguiBridge {
 
         // TODO: Collect inputs from given viewport
 
-        // Check rendering schedule for deferred viewport
+        // Check rendering schedule ONLY for deferred viewport
         if !should_render && viewport.repaint_at.is_some_and(|x| Instant::now() < x) {
             // Only if it's deferred viewport(repaint is set) and repaint schedule not reached;
             return false;
@@ -579,10 +597,6 @@ impl EguiBridge {
         } else {
             false
         }
-    }
-
-    fn free_painter(painter: PainterContext) {
-        // todo!()
     }
 
     fn viewport_end_frame(&self, id: ViewportId) {
@@ -655,5 +669,14 @@ impl SharedContext {
     fn join_frame_fence(&self) {
         let (ref mut current, ref mut requested) = *self.fence_frame.lock();
         *requested = *current;
+    }
+}
+
+impl Drop for PainterContext {
+    fn drop(&mut self) {
+        self.painter.queue_free();
+        if let Some(mut x) = self.window.take() {
+            x.queue_free();
+        }
     }
 }
