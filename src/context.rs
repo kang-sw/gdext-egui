@@ -1,5 +1,5 @@
 use std::{
-    collections::hash_map,
+    collections::{hash_map, HashSet, VecDeque},
     mem::take,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
@@ -21,7 +21,10 @@ use godot::{
 };
 use tap::prelude::{Pipe, Tap};
 
-use crate::painter::{self, ViewportInput};
+use crate::{
+    default,
+    painter::{self, ViewportInput},
+};
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                             BRIDGE                                             */
@@ -43,7 +46,11 @@ pub struct EguiBridge {
     pub max_texture_bits: u8,
 
     /// Actual Godot Nodes for realization of viewports.
-    painters: ViewportIdMap<PainterContext>,
+    ///
+    /// # NOTE
+    ///
+    /// Lock order MUST be `share.viewports` -> `painters.`
+    painters: Mutex<ViewportIdMap<PainterContext>>,
 }
 
 struct PainterContext {
@@ -347,7 +354,11 @@ impl EguiBridge {
                 return;
             }
 
-            assert!(this.viewport_start_frame(viewport.ids.this, Some(viewport.builder)));
+            assert!(this.viewport_start_frame(
+                viewport.ids.this,
+                Some(viewport.builder),
+                default()
+            ));
             (viewport.viewport_ui_cb)(ctx);
             this.viewport_end_frame(viewport.ids.this);
         });
@@ -372,7 +383,7 @@ impl EguiBridge {
             });
 
         // Start root frame as normal.
-        assert!(self.viewport_start_frame(egui::ViewportId::ROOT, None));
+        assert!(self.viewport_start_frame(egui::ViewportId::ROOT, None, default()));
     }
 
     fn finish_frame(&mut self) {
@@ -442,7 +453,33 @@ impl EguiBridge {
         // End main frame loop.
         self.viewport_end_frame(egui::ViewportId::ROOT);
 
-        // TODO: Handle viewport changes from output.
+        // TODO: Handle viewport changes from output, visit each viewports
+        let mut remaining_viewports = share
+            .viewports
+            .lock()
+            .keys()
+            .copied()
+            .collect::<HashSet<_>>();
+
+        let mut viewports = VecDeque::new();
+
+        loop {
+            viewports.extend(share.full_output.lock().viewport_output.drain());
+
+            let Some((vp_id, vp_out)) = viewports.pop_front() else {
+                break;
+            };
+
+            if !remaining_viewports.remove(&vp_id) {
+                // This viewport seems created multiple times ...
+                godot_warn!("Viewport {vp_id:?} declared multiple times from different root");
+                continue;
+            }
+
+            // TODO: Deal with commands ...
+        }
+
+        // TODO: Cleanup full_output for next frame.
 
         // TODO: Handle new textures from output.
 
@@ -456,7 +493,12 @@ impl EguiBridge {
         self.share.join_frame_fence();
     }
 
-    fn viewport_start_frame(&self, id: ViewportId, build: Option<ViewportBuilder>) -> bool {
+    fn viewport_start_frame(
+        &self,
+        id: ViewportId,
+        build: Option<ViewportBuilder>,
+        commands: Vec<egui::ViewportCommand>,
+    ) -> bool {
         // TODO: Check schedule; if it's okay to start rendering.
         let mut should_render = id == ViewportId::ROOT;
 
@@ -504,10 +546,17 @@ impl EguiBridge {
                     builder: init,
                     updates: (updates, Some(tx_update)),
                     paint_this_frame: None,
-                    info: Default::default(),
+                    info: default(),
                 })
             }
         };
+
+        // Spawn or update viewport
+        viewport.updates.0.extend(commands);
+
+        let mut painter = self.painters.lock().entry(id);
+
+        // Check if we have to create new
 
         // It's highly likely be non-deferred renderer. Force rendering always!
         should_render |= viewport.repaint_with.is_none();
@@ -524,9 +573,6 @@ impl EguiBridge {
             return false;
         }
 
-        // Release lock first.
-        drop(viewport_lock);
-
         if should_render {
             self.share.egui.begin_frame(raw_input);
             true
@@ -535,12 +581,36 @@ impl EguiBridge {
         }
     }
 
+    fn free_painter(painter: PainterContext) {
+        // todo!()
+    }
+
     fn viewport_end_frame(&self, id: ViewportId) {
-        // TODO: Retrieve viewport-wise output.
+        // Retrieve viewport-wise output.
+        let mut output = self.share.egui.end_frame();
 
-        // TODO: Que async tesselation jobs to Rayon.
+        let paints = take(&mut output.shapes);
+        let ppi = output.pixels_per_point;
 
-        // TODO: Accumulate outputs to main output.
+        // Que async tesselation jobs to Rayon.
+        let egui = self.share.egui.clone();
+        let (tx, rx) = oneshot::channel();
+
+        self.share
+            .viewports
+            .lock()
+            .get_mut(&id)
+            .unwrap()
+            .paint_this_frame = Some(rx);
+
+        // Offload tesselation from game thread.
+        rayon::spawn_fifo(move || {
+            // It's just okay to fail.
+            tx.send(egui.tessellate(paints, ppi)).ok();
+        });
+
+        // Accumulate outputs to primary output.
+        self.share.full_output.lock().append(output);
     }
 
     fn paint_viewport(&mut self, id: ViewportId) {

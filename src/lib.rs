@@ -27,3 +27,7 @@ pub extern crate egui;
 
 pub use context::EguiBridge;
 pub use egui::{ViewportBuilder, ViewportId};
+
+fn default<T: Default>() -> T {
+    T::default()
+}
