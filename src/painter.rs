@@ -27,10 +27,10 @@ pub(crate) struct EguiViewportBridge {
 
 impl EguiViewportBridge {
     pub fn initiate(&mut self, on_event: Box<dyn Fn(egui::Event)>) {
-        todo!()
+        // TODO:
     }
 
     pub fn draw(&mut self, textures: &TextureLibrary, shapes: Vec<egui::epaint::ClippedShape>) {
-        todo!()
+        // TODO:
     }
 }

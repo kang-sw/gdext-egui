@@ -6,7 +6,7 @@ use std::{
         mpsc, Arc,
     },
     thread::ThreadId,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use derive_setters::Setters;
@@ -16,10 +16,14 @@ use egui::{
     ViewportClass, ViewportId, ViewportIdMap,
 };
 use godot::{
-    engine::{self, control::LayoutPreset, window, CanvasLayer, Control, ICanvasLayer, WeakRef},
+    engine::{
+        self, control::LayoutPreset, window, CanvasLayer, Control, DisplayServer, ICanvasLayer,
+        WeakRef,
+    },
     prelude::*,
 };
 use tap::prelude::{Pipe, Tap};
+use with_drop::with_drop;
 
 use crate::{default, helpers::ToCounterpart, painter};
 
@@ -289,6 +293,7 @@ impl EguiBridge {
 
             ctx.set_embed_viewports(false);
             ctx.set_request_repaint_callback({
+                // Prevent cyclic reference; `share` is already holding the reference!
                 let w_share = w_share.clone();
                 move |repaint| {
                     let Some(share) = w_share.upgrade() else {
@@ -351,7 +356,10 @@ impl EguiBridge {
                 return;
             }
 
-            this.viewport_validate(viewport.ids.this, Some(viewport.builder));
+            this.viewport_validate(
+                viewport.ids.this,
+                Some((viewport.ids.parent, viewport.builder)),
+            );
             assert!(this.viewport_start_frame(viewport.ids.this));
 
             (viewport.viewport_ui_cb)(ctx);
@@ -478,14 +486,13 @@ impl EguiBridge {
             }
 
             // Validate viewport.
-            self.viewport_validate(vp_id, Some(vp_out.builder));
+            self.viewport_validate(vp_id, Some((vp_out.parent, vp_out.builder)));
 
             if let Some(ui_cb) = vp_out.viewport_ui_cb {
-                // Other classes are already initiated
+                // Other classes than deferred are already initiated
 
                 if self.viewport_start_frame(vp_id) {
-                    // Viewport start command only returns false when it's deferred.
-
+                    // Populate renderings
                     ui_cb(&self.share.egui);
                     self.viewport_end_frame(vp_id);
                 }
@@ -506,9 +513,21 @@ impl EguiBridge {
         self.share.join_frame_fence();
     }
 
-    fn viewport_validate(&self, id: ViewportId, build: Option<ViewportBuilder>) {
+    fn viewport_validate(
+        &self,
+        id: ViewportId,
+        build_with_parent: Option<(ViewportId, ViewportBuilder)>,
+    ) {
         // Checkout painter
-        let mut painter = self.painters.lock().remove(&id);
+        let mut painter = with_drop(self.painters.lock().remove(&id), |x| {
+            if let Some(mut x) = x {
+                x.painter.queue_free();
+
+                if let Some(mut x) = x.window {
+                    x.queue_free();
+                }
+            }
+        });
 
         // Check if this is from spawned viewports
         let spawned_dispose = self
@@ -523,15 +542,23 @@ impl EguiBridge {
         let mut viewport_lock = self.share.viewports.lock();
         let viewport = match viewport_lock.entry(id) {
             hash_map::Entry::Occupied(mut entry) => {
-                if let Some(build) = build {
+                if let Some((parent, build)) = build_with_parent {
                     let entry = entry.get_mut();
                     let (patch, recreate) = entry.builder.patch(build);
 
-                    // We don't need to recreate any of viewport -> Godot supports all in
-                    // runtime!
+                    // We don't need to trigger recreation from this flag ... Everything
+                    // is configurable through commands.
                     let _ = recreate;
 
-                    entry.updates.extend(patch);
+                    if entry.info.parent.is_some_and(|p| p != parent) {
+                        // Parent is changed, so we need to recreate this viewport.
+                        should_rebuild = true;
+
+                        // In this case, previous updates will be discarded.
+                        entry.updates.splice(.., patch);
+                    } else {
+                        entry.updates.extend(patch);
+                    }
                 }
 
                 entry.into_mut()
@@ -543,7 +570,9 @@ impl EguiBridge {
                 let (_tx_update, rx_update) = mpsc::channel();
                 let mut init = ViewportBuilder::default();
 
-                let (updates, _) = build.map(|x| init.patch(x)).unwrap_or_default();
+                let (updates, _) = build_with_parent
+                    .map(|x| init.patch(x.1))
+                    .unwrap_or_default();
 
                 entry.insert(ViewportContext {
                     repaint_at: Some(Instant::now()),
@@ -625,13 +654,13 @@ impl EguiBridge {
                 Some(gd_wnd)
             };
 
-            painter = Some(PainterContext {
+            *painter = Some(PainterContext {
                 painter: gd_painter,
                 window: gd_wnd,
             });
         }
 
-        let Some(painter) = painter else {
+        let Some(painter) = painter.into_inner() else {
             unreachable!()
         };
 
@@ -679,6 +708,8 @@ impl EguiBridge {
                     // mouse delta then move the window.
                 }
                 OuterPosition(pos) => window.set_position(pos.to_alternative()),
+
+                // FIXME: Accurately, the painter should be updated with new size.
                 InnerSize(size) => window.set_size(size.to_alternative()),
                 MinInnerSize(size) => window.set_min_size(size.to_alternative()),
                 MaxInnerSize(size) => window.set_max_size(size.to_alternative()),
@@ -745,9 +776,51 @@ impl EguiBridge {
         }
 
         // Update viewport input from painter output.
+        if let Some(wnd) = painter.window.clone() {
+            let info = &mut viewport.info;
 
-        // Viewport should be released first.
+            let inner_pos =
+                Vector2::from_vector2i(wnd.get_position()) + painter.painter.get_position();
+            let inner_size = painter.painter.get_size();
+
+            let gd_ds = DisplayServer::singleton();
+            let id_screen = gd_ds
+                .window_get_current_screen_ex()
+                .window_id(wnd.get_window_id())
+                .done();
+            let scale = gd_ds.screen_get_scale_ex().screen(id_screen).done();
+
+            info.inner_rect = Some(Rect2::new(inner_pos, inner_size).to_counterpart());
+            info.focused = Some(wnd.has_focus());
+            info.native_pixels_per_point = Some(scale);
+            info.fullscreen = Some(wnd.get_mode() == window::Mode::FULLSCREEN);
+            info.minimized = Some(wnd.get_mode() == window::Mode::MINIMIZED);
+            info.maximized = Some(wnd.get_mode() == window::Mode::MAXIMIZED);
+            info.monitor_size = Some(
+                gd_ds
+                    .screen_get_size_ex()
+                    .screen(id_screen)
+                    .done()
+                    .to_counterpart(),
+            );
+            info.outer_rect = Some(egui::Rect::from_min_size(
+                wnd.get_position().to_alternative(),
+                wnd.get_size().to_counterpart(),
+            ));
+        }
+
+        // Just validate viewport information on input
+        let input = viewport.info.clone();
+
+        // After copying required information, drop the lock.
         drop(viewport_lock);
+
+        // Reset viewport info.
+        self.share
+            .raw_input_template
+            .lock()
+            .viewports
+            .insert(id, input);
 
         // Checkin painter
         self.painters.lock().pipe(|mut x| {
@@ -761,21 +834,27 @@ impl EguiBridge {
         // NOTE: Seems recursive call to begin_frame is handled by stack internally.
         let mut raw_input = self.share.raw_input_template.lock().clone();
 
-        let viewport = &self.share.viewports.lock()[&id];
+        {
+            let mut viewport = self.share.viewports.lock();
+            let viewport = viewport.get_mut(&id).unwrap();
 
-        // It's highly likely be non-deferred renderer. Force rendering always!
-        should_render |= viewport.repaint_with.is_none();
+            // It's highly likely be non-deferred renderer. Force rendering always!
+            should_render |= viewport.repaint_with.is_none();
 
-        raw_input.screen_rect = viewport.info.inner_rect;
-        raw_input.focused = viewport.info.focused.unwrap_or_default();
-        raw_input.viewport_id = id;
+            raw_input.screen_rect = viewport.info.inner_rect;
+            raw_input.focused = viewport.info.focused.unwrap_or_default();
+            raw_input.viewport_id = id;
 
-        // TODO: Collect inputs from given viewport
+            // TODO: Collect inputs from given viewport
 
-        // Check rendering schedule ONLY for deferred viewport
-        if !should_render && viewport.repaint_at.is_some_and(|x| Instant::now() < x) {
-            // Only if it's deferred viewport(repaint is set) and repaint schedule not reached;
-            return false;
+            // Check rendering schedule ONLY for deferred viewport
+            if !should_render && viewport.repaint_at.is_some_and(|x| Instant::now() < x) {
+                // Only if it's deferred viewport(repaint is set) and repaint schedule not reached;
+                return false;
+            }
+
+            // Just set repaint schedule to far future.
+            viewport.repaint_at = Some(Instant::now() + Duration::from_secs(3600));
         }
 
         if should_render {
@@ -815,9 +894,7 @@ impl EguiBridge {
     }
 
     fn paint_viewport(&mut self, id: ViewportId) {
-        // TODO: Spawn viewport node if not found from painters.
-
-        // TODO: From tesselation result, draw painter.
+        // TODO: From tesselation result, draw painter node.
     }
 
     /// Start frame in thread-safe manner.
@@ -838,7 +915,11 @@ impl EguiBridge {
 
 impl SharedContext {
     fn repaint(&self, info: egui::RequestRepaintInfo) {
-        // TODO: Find viewport context, update repaint timing.
+        if let Some(x) = self.viewports.lock().get_mut(&info.viewport_id) {
+            x.repaint_at = Some(Instant::now() + info.delay);
+        } else {
+            godot_warn!("EGUI requested repaint for unregistered viewpot: {info:?}")
+        };
     }
 
     fn try_advance_frame_fence(&self) -> bool {
@@ -856,14 +937,5 @@ impl SharedContext {
     fn join_frame_fence(&self) {
         let (ref mut current, ref mut requested) = *self.fence_frame.lock();
         *requested = *current;
-    }
-}
-
-impl Drop for PainterContext {
-    fn drop(&mut self) {
-        self.painter.queue_free();
-        if let Some(mut x) = self.window.take() {
-            x.queue_free();
-        }
     }
 }
