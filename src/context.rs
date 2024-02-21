@@ -1,6 +1,7 @@
 use std::{
+    mem::take,
     sync::{
-        atomic::{AtomicBool, AtomicU64},
+        atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
         mpsc, Arc,
     },
     thread::ThreadId,
@@ -88,7 +89,7 @@ struct SpawnedViewportContext {
     dispose: Arc<AtomicBool>,
 
     /// Sets at the very first frame.
-    new_init: Option<egui::ViewportBuilder>,
+    builder: egui::ViewportBuilder,
 }
 
 struct ViewportContext {
@@ -102,7 +103,13 @@ struct ViewportContext {
     rx_update: mpsc::Receiver<painter::ViewportInput>,
 
     /// Viewport initialization
-    init: egui::ViewportBuilder,
+    builder: egui::ViewportBuilder,
+
+    /// Viewport commands pending apply.
+    updates: (Vec<egui::ViewportCommand>, bool),
+
+    /// Paint commands that is being applied,
+    paint: oneshot::Receiver<Vec<egui::ClippedPrimitive>>,
 
     /// Cached viewport information, that we're currently updating on.
     info: egui::ViewportInfo,
@@ -133,7 +140,7 @@ impl EguiBridge {
 /* ------------------------------------- Context Management ------------------------------------- */
 
 type FnBuildWindow = dyn 'static + Send + for<'a> Fn(&'a mut bool) -> egui::Window;
-type FnShowWidget = dyn 'static + Send + Fn(&egui::Ui) -> bool;
+type FnShowWidget = dyn 'static + Send + Fn(&egui::Ui);
 
 /// APIs for spawning viewports.
 ///
@@ -161,16 +168,17 @@ impl EguiBridge {
     /// window visibility / close behavior, use bool reference parameter to call
     /// [`egui::Window::open`].
     ///
-    ///
+    /// If you set delivered boolean parameter of `configure` as false, then the window
+    /// will be closed.
     pub fn spawn_main_widget(
         &self,
-        config: impl 'static + Send + for<'a> Fn(&'a mut bool) -> egui::Window,
-        show: impl 'static + Send + FnMut(&egui::Ui) -> bool,
+        configure: impl 'static + Send + for<'a> Fn(&'a mut bool) -> egui::Window,
+        show: impl 'static + Send + FnMut(&egui::Ui),
     ) {
         let show = Mutex::new(show);
         self.share.spawned_widgets.lock().pipe(|mut entries| {
             entries.push(SpawnedWidgetInfo {
-                build_window: Box::new(config),
+                build_window: Box::new(configure),
                 show: Box::new(move |ui| show.lock()(ui)),
             })
         });
@@ -247,9 +255,9 @@ impl EguiBridge {
                 SpawnedViewportContext {
                     dispose: dispose.clone(),
                     repaint: Arc::new(move |ctx| {
-                        dispose.store(show_fn.lock()(ctx), std::sync::atomic::Ordering::Relaxed);
+                        dispose.store(show_fn.lock()(ctx), Relaxed);
                     }),
-                    new_init: Some(builder),
+                    builder,
                 },
             )
         });
@@ -329,7 +337,7 @@ impl EguiBridge {
                 return;
             }
 
-            this.viewport_start_frame(viewport.ids.this);
+            this.viewport_start_frame(viewport.ids.this, Some(viewport.builder));
             (viewport.viewport_ui_cb)(ctx);
             this.viewport_end_frame(viewport.ids.this);
         });
@@ -350,15 +358,75 @@ impl EguiBridge {
             });
 
         // Start root frame as normal.
-        self.viewport_start_frame(egui::ViewportId::ROOT);
+        self.viewport_start_frame(egui::ViewportId::ROOT, None);
     }
 
     fn finish_frame(&mut self) {
-        // TODO: Show main frame widgets
+        let share = self.share.clone();
 
-        // TODO: End main frame loop.
+        // Show main frame widgets:
+        //
+        // We temporarily take out of all widgets from array, to ensure no deadlock
+        // would occur!
+        take(&mut *share.spawned_widgets.lock())
+            .tap_mut(|widgets| {
+                widgets.retain_mut(|w| {
+                    let mut keep_open = true;
+                    let wnd = (w.build_window)(&mut keep_open);
+                    let resp = wnd.show(&share.egui, |ui| (w.show)(ui));
 
-        // TODO: Validate deferred spawned viewport (won't be shown immediately)
+                    let Some(resp) = resp else {
+                        // Widget is closed.
+                        return false;
+                    };
+
+                    if resp.response.gained_focus() || resp.response.clicked() {
+                        // TODO: Check if changing drawing order meaningful.
+                        // - Seems handled by egui?
+                    }
+
+                    true
+                })
+            })
+            .pipe(|mut widgets| {
+                // Not put it back to original array.
+                let mut lock = share.spawned_widgets.lock();
+
+                // Prevent allocation when possible.
+                widgets.extend(lock.drain(..));
+                *lock = widgets;
+            });
+
+        // Deal with spawned viewports; in same manner.
+        take(&mut *share.spawned_viewports.lock())
+            .tap_mut(|viewports| {
+                viewports.retain(|id, value| {
+                    if value.dispose.load(Relaxed) {
+                        false
+                    } else {
+                        let ui_cb = value.repaint.clone();
+                        share.egui.show_viewport_deferred(
+                            *id,
+                            value.builder.clone(),
+                            move |ctx, _| {
+                                ui_cb(ctx);
+                            },
+                        );
+
+                        true
+                    }
+                });
+            })
+            .pipe(|mut viewports| {
+                let mut lock = share.spawned_viewports.lock();
+
+                // Overwrite previous viewports with newly spawned ones, if exist.
+                viewports.extend(lock.drain());
+                *lock = viewports;
+            });
+
+        // End main frame loop.
+        self.viewport_end_frame(egui::ViewportId::ROOT);
 
         // TODO: Handle viewport changes from output.
 
@@ -372,7 +440,7 @@ impl EguiBridge {
         self.share.join_frame_fence();
     }
 
-    fn viewport_start_frame(&self, id: ViewportId) {
+    fn viewport_start_frame(&self, id: ViewportId, build: Option<ViewportBuilder>) {
         // NOTE: Seems recursive call to begin_frame is handled by stack internally.
 
         // TODO: Spawn context if viewport id not exist
