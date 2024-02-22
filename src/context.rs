@@ -65,10 +65,34 @@ pub struct EguiBridge {
     cursor_shape: RefCell<Option<egui::CursorIcon>>,
 
     /// List of widgets
-    widgets: RefCell<BTreeMap<(PanelGroup, i32), Box<FnShowWidget>>>,
+    widgets: RefCell<BTreeMap<(PanelGroup, i32), PanelItem>>,
+
+    /// List of widgets, which is spawned this frame's rendering phase.
+    widgets_new: RefCell<Vec<NewWidgetItem>>,
 
     /// List of menus
     widget_menu_items: RefCell<MenuNode>,
+
+    // #[export]
+    // #[var(get, set)]
+    pub hide_spawned_widgets: bool,
+
+    // #[export]
+    // #[var(get, set)]
+    pub hide_spawned_viewports: bool,
+
+    // #[export]
+    // #[var(get, set)]
+    pub show_console: bool,
+}
+
+/// Type alias for widget declaration
+type NewWidgetItem = ((PanelGroup, i32), Box<FnShowWidget>);
+
+/// Widget declaration & context
+struct PanelItem {
+    draw: Box<FnShowWidget>,
+    retain: WidgetRetain,
 }
 
 #[derive(Clone)]
@@ -308,6 +332,12 @@ pub enum PanelGroup {
     Viewport3,
 }
 
+impl PanelGroup {
+    pub fn range(&self) -> std::ops::RangeInclusive<(Self, i32)> {
+        (*self, i32::MIN)..=(*self, i32::MAX)
+    }
+}
+
 /* -------------------------------------------- APIs -------------------------------------------- */
 
 /// APIs for spawning viewports.
@@ -347,8 +377,8 @@ impl EguiBridge {
         &self.share.egui
     }
 
-    /// Add a widget item to the main menu bar. It'll silently replace the existing item
-    /// if path is already exist.
+    /// Add a widget item to the main menu bar. It'll return previous menu item if the
+    /// path already exists.
     ///
     /// # Usage
     ///
@@ -362,6 +392,9 @@ impl EguiBridge {
     /// });
     /// ```
     ///
+    /// # Panics
+    ///
+    /// Spawning another menu item inside widget callback is not allowed.
     pub fn spawn_menu_item<T, L>(
         &self,
         path: impl IntoIterator<Item = T>,
@@ -383,20 +416,16 @@ impl EguiBridge {
 
     /// Add a widget item to specified panel group with given order. It'll silently
     /// replace the existing item if path is already exist.
-    ///
-    ///
     pub fn spawn_panel_item<T, L>(
         &self,
         panel: PanelGroup,
         slot: i32,
         mut widget: impl FnMut(&egui::Ui) -> L + 'static,
-    ) -> Option<Box<FnShowWidget>>
-    where
+    ) where
         L: Into<WidgetRetain>,
     {
-        let mut widgets = self.widgets.borrow_mut();
         let show = Box::new(move |ui: &_| widget(ui).into());
-        widgets.insert((panel, slot), show)
+        self.widgets_new.borrow_mut().push(((panel, slot), show));
     }
 
     // TODO: `bind_console_command`, `output_to_console`, `show_console`, `toggle_console`
@@ -610,8 +639,20 @@ impl EguiBridge {
     fn finish_frame(&mut self) {
         let share = self.share.clone();
 
-        // Deal with spawned viewports; in same manner.
+        /* ------------------------- Spawned Widget / Viewport Handling ------------------------- */
+
+        // Implementation is too long, thus splitting it into another function.
+        //
+        // This call order (main menu -> panels) should be preserved to ensure that
+        // menubar is rendered topmost of the window correctly!
+        self._finish_frame_render_spawned_main_menu();
+        self._finish_frame_render_spawned_panels();
+
+        // Spawn rest of viewport items
+        self._finish_frame_render_spawned_viewports();
+
         let viewports = take(&mut *share.spawned_viewports.lock()).tap_mut(|viewports| {
+            // Check if any of the spawned viewports should be disposed.
             viewports.retain(|id, value| {
                 if *value.dispose.lock() == WidgetRetain::Dispose {
                     false
@@ -629,12 +670,15 @@ impl EguiBridge {
         });
 
         viewports.pipe(|mut viewports| {
+            // Check-in viewports list.
             let mut lock = share.spawned_viewports.lock();
 
             // Overwrite previous viewports with newly spawned ones, if exist.
             viewports.extend(lock.drain());
             *lock = viewports;
         });
+
+        /* ------------------------------ Viewport Deltas Handling ------------------------------ */
 
         // End main frame loop.
         self.viewport_end_frame(egui::ViewportId::ROOT);
@@ -729,6 +773,8 @@ impl EguiBridge {
             assert!(share.viewports.lock().remove(&id).is_some());
         }
 
+        /* -------------------------------- Frame Output Handling ------------------------------- */
+
         // Cleanup full_output for next frame.
         let egui::FullOutput {
             platform_output: _,
@@ -743,41 +789,6 @@ impl EguiBridge {
         } = take(&mut *self.share.full_output.lock());
 
         debug_assert!(shapes.is_empty(), "logic error - shape is viewport-wise");
-
-        // Handle new textures from output.
-        for (id, delta) in textures_created {
-            self.textures.update_texture(id, delta);
-        }
-
-        // Paint all viewports
-        for (id, mut paint) in self.surfaces.borrow_mut().clone() {
-            let Some(rx_primitives) = self
-                .share
-                .viewports
-                .lock()
-                .get_mut(&id)
-                .unwrap()
-                .pipe(|vp| vp.paint_this_frame.take())
-            else {
-                // This viewport is not re-rendered this frame.
-                continue;
-            };
-
-            // Wait for tesselation result synchronously.
-            let Ok(primitives) = rx_primitives.recv_timeout(Duration::from_secs(5)) else {
-                godot_warn!(
-                    "Tesselation result for viewport {id:?} is not received within 5 seconds"
-                );
-                continue;
-            };
-
-            paint.painter.bind_mut().draw(&self.textures, primitives);
-        }
-
-        // Handle disposed textures from output.
-        for id in textures_freed {
-            self.textures.free_texture(id);
-        }
 
         // Handle cursor shape
         if let Some(cursor) = self.cursor_shape.take() {
@@ -824,6 +835,45 @@ impl EguiBridge {
             });
         }
 
+        /* -------------------------------------- Painting -------------------------------------- */
+
+        // Handle new textures from output.
+        for (id, delta) in textures_created {
+            self.textures.update_texture(id, delta);
+        }
+
+        // Paint all viewports
+        for (id, mut paint) in self.surfaces.borrow_mut().clone() {
+            let Some(rx_primitives) = self
+                .share
+                .viewports
+                .lock()
+                .get_mut(&id)
+                .unwrap()
+                .pipe(|vp| vp.paint_this_frame.take())
+            else {
+                // This viewport is not re-rendered this frame.
+                continue;
+            };
+
+            // Wait for tesselation result synchronously.
+            let Ok(primitives) = rx_primitives.recv_timeout(Duration::from_secs(5)) else {
+                godot_warn!(
+                    "Tesselation result for viewport {id:?} is not received within 5 seconds"
+                );
+                continue;
+            };
+
+            paint.painter.bind_mut().draw(&self.textures, primitives);
+        }
+
+        // Handle disposed textures from output.
+        for id in textures_freed {
+            self.textures.free_texture(id);
+        }
+
+        /* ---------------------------------------- Done. --------------------------------------- */
+
         // Finish this frame.
         self.share.finish_frame();
     }
@@ -836,6 +886,73 @@ impl EguiBridge {
                 x.queue_free();
             }
         }
+    }
+
+    fn _finish_frame_render_spawned_main_menu(&self) {
+        // TODO
+    }
+
+    fn _finish_frame_render_spawned_panels(&self) {
+        // Apply widget patches right before rendering.
+        let ctx = &self.share.egui;
+        let widgets = &mut *self.widgets.borrow_mut();
+        widgets.extend(self.widgets_new.borrow_mut().drain(..).map(|(k, v)| {
+            (
+                k,
+                PanelItem {
+                    draw: v,
+                    retain: Default::default(),
+                },
+            )
+        }));
+
+        // Based on layout; draw widgets
+        let enums = [
+            PanelGroup::Left,
+            PanelGroup::Right,
+            PanelGroup::Central,
+            PanelGroup::BottomLeft,
+            PanelGroup::BottomRight,
+        ];
+
+        let [has_left, has_right, has_central, has_bottom_left, has_bottom_right] =
+            enums.map(|x| widgets.range_mut(x.range()).any(|_| true));
+
+        fn draw_fn(
+            ui: &mut egui::Ui,
+            widgets: &mut BTreeMap<(PanelGroup, i32), Box<FnShowWidget>>,
+            group: PanelGroup,
+        ) {
+            // TODO: Draw widgets
+        }
+
+        // Draw top side of panels
+
+        let draw_top = |ui: &mut egui::Ui| {
+            // TODO: Split sections if required
+        };
+
+        if has_left || has_right || has_central {
+            if has_bottom_left || has_bottom_right {
+                egui::TopBottomPanel::top("__RootBridge::TopBottom").show(ctx, draw_top);
+            } else {
+                egui::CentralPanel::default().show(ctx, draw_top);
+            }
+        }
+
+        // Draw bottom side of panels
+        if has_bottom_left || has_bottom_right {
+            // Always fill the rest of panel
+            egui::CentralPanel::default().show(ctx, |ui| {
+                // TODO: Draw bottom side of panels
+            });
+        }
+
+        // TODO: Remove disposed widgets
+    }
+
+    fn _finish_frame_render_spawned_viewports(&self) {
+        // TODO
     }
 
     fn viewport_validate(
