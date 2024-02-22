@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::{hash_map, HashSet, VecDeque},
+    collections::{hash_map, BTreeMap, HashSet, VecDeque},
     mem::take,
     sync::{
         atomic::{AtomicBool, AtomicU8, Ordering::Relaxed},
@@ -63,6 +63,12 @@ pub struct EguiBridge {
 
     /// Determines the cursor shape of this frame.
     cursor_shape: RefCell<Option<egui::CursorIcon>>,
+
+    /// List of widgets
+    widgets: RefCell<BTreeMap<(PanelGroup, i32), Box<FnShowWidget>>>,
+
+    /// List of menus
+    widget_menu_items: RefCell<MenuNode>,
 }
 
 #[derive(Clone)]
@@ -88,9 +94,6 @@ struct SharedContext {
     /// Accumulated output for entire single frame.
     full_output: Mutex<egui::FullOutput>,
 
-    /// List of widgets that is tracked by this context.
-    spawned_widgets: Arc<Mutex<Vec<SpawnedWidgetInfo>>>,
-
     /// List of viewports that is tracked by this context.
     spawned_viewports: Mutex<ViewportIdMap<SpawnedViewportContext>>,
 
@@ -102,17 +105,12 @@ struct SharedContext {
     main_thread_id: ThreadId,
 }
 
-struct SpawnedWidgetInfo {
-    build_window: Box<FnBuildWindow>,
-    show: Box<FnShowWidget>,
-}
-
 struct SpawnedViewportContext {
     /// Captures `dispose`, then set it to false when viewport closed.
     repaint: Arc<DeferredViewportUiCallback>,
 
     /// Should spawned viewport be closed?
-    dispose: Arc<AtomicBool>,
+    dispose: Arc<Mutex<WidgetRetain>>,
 
     /// Sets at the very first frame.
     builder: egui::ViewportBuilder,
@@ -142,6 +140,12 @@ struct ViewportContext {
     info: egui::ViewportInfo,
 }
 
+#[derive(Default)]
+struct MenuNode {
+    children: BTreeMap<String, MenuNode>,
+    draw: Option<Box<FnShowWidget>>,
+}
+
 /// Closing steps
 ///
 /// 1. Requested: Godot Window sends close signal => `ViewportContext::close_request`
@@ -160,11 +164,8 @@ const VIEWPORT_CLOSE_REQUESTED: u8 = 1;
 const VIEWPORT_CLOSE_PENDING: u8 = 2;
 const VIEWPORT_CLOSE_CLOSE: u8 = 3;
 
-/// Callback for build spawned widget's window config.
-type FnBuildWindow = dyn Fn(&mut bool) -> egui::Window + 'static + Send;
-
 /// Callback for showing spawned widget.
-type FnShowWidget = dyn Fn(&egui::Ui) + 'static + Send;
+type FnShowWidget = dyn FnMut(&egui::Ui) -> WidgetRetain + 'static;
 
 /// Callback for deferred context access, for non-rendering purposes.
 type FnDeferredContextAccess = dyn FnOnce(&egui::Context) + 'static;
@@ -190,9 +191,124 @@ impl EguiBridge {
     fn __internal_try_start_frame_inner(&self) {
         self.try_start_frame();
     }
+
+    // TODO: Signal based API, when the `gdext` is ready for first-class signal APIs.
 }
 
-/* ------------------------------------- Context Management ------------------------------------- */
+/* --------------------------------------- Widget Helpers --------------------------------------- */
+
+/// Every spawned widgets are retained as long as the callback returns true.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WidgetRetain {
+    Retain,
+    Dispose,
+
+    /// For widgets, it is treated as `Retain` permanently. For viewports, it'll be
+    /// disposed at the end of frame.
+    #[default]
+    Unspecified,
+}
+
+/// Misc helper implementations for `WidgetRetain`
+mod _widget_retain {
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+
+    use super::WidgetRetain;
+
+    impl From<bool> for WidgetRetain {
+        fn from(x: bool) -> Self {
+            if x {
+                Self::Retain
+            } else {
+                Self::Dispose
+            }
+        }
+    }
+
+    impl From<()> for WidgetRetain {
+        fn from(_: ()) -> Self {
+            Self::Unspecified
+        }
+    }
+
+    impl<T> From<std::rc::Weak<T>> for WidgetRetain {
+        fn from(x: std::rc::Weak<T>) -> Self {
+            if x.strong_count() > 0 {
+                Self::Retain
+            } else {
+                Self::Dispose
+            }
+        }
+    }
+
+    impl<T> From<std::sync::Weak<T>> for WidgetRetain {
+        fn from(x: std::sync::Weak<T>) -> Self {
+            if x.strong_count() > 0 {
+                Self::Retain
+            } else {
+                Self::Dispose
+            }
+        }
+    }
+
+    impl From<std::sync::Arc<AtomicBool>> for WidgetRetain {
+        fn from(x: std::sync::Arc<AtomicBool>) -> Self {
+            if x.load(Relaxed) {
+                Self::Retain
+            } else {
+                Self::Dispose
+            }
+        }
+    }
+
+    impl From<std::rc::Rc<bool>> for WidgetRetain {
+        fn from(x: std::rc::Rc<bool>) -> Self {
+            if *x {
+                Self::Retain
+            } else {
+                Self::Dispose
+            }
+        }
+    }
+}
+
+/// There are several predefined panels that can be used as a root of the viewport.
+///
+/// These are lazily created if there's any widget that you have added any widget on that
+/// panel group.
+///
+/// ## Layout
+///
+/// ```text
+///         ┌──────────────────────────────────────┐
+///         │add_menu                              │
+///         ├─────────┬─────────────────┬──────────┤
+///         │         │                 │          │
+///         │ Left    │ Central         │ Right    │
+///         │         │                 │          │
+///         ├─────────┴─────────┬───────┴──────────┤
+///         │                   │                  │
+///         │ BottomLeft        │ BottomRight      │
+///         │                   │                  │
+///         └───────────────────┴──────────────────┘
+/// ```
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PanelGroup {
+    #[default]
+    Left,
+    Right,
+    Central,
+
+    BottomRight,
+    BottomLeft,
+
+    /// These will spawn a new window for each of them.
+    Viewport1,
+    Viewport2,
+    Viewport3,
+}
+
+/* -------------------------------------------- APIs -------------------------------------------- */
 
 /// APIs for spawning viewports.
 ///
@@ -231,27 +347,61 @@ impl EguiBridge {
         &self.share.egui
     }
 
-    /// Spawn a widget on main draw loop.
+    /// Add a widget item to the main menu bar. It'll silently replace the existing item
+    /// if path is already exist.
     ///
-    /// Passed `config` will be used for creating container window for widget. To control
-    /// window visibility / close behavior, use bool reference parameter to call
-    /// [`egui::Window::open`].
+    /// # Usage
     ///
-    /// If you set delivered boolean parameter of `configure` as false, then the window
-    /// will be closed.
-    pub fn spawn_main_widget(
+    /// ```no_run
+    /// # let egui = EguiBridge::new_alloc();
+    ///
+    /// egui.add_menu_item(["File", "New"], |ui| {
+    ///     if ui.button("Empty").clicked() {
+    ///         // ...
+    ///     }
+    /// });
+    /// ```
+    ///
+    pub fn spawn_menu_item<T, L>(
         &self,
-        configure: impl 'static + Send + for<'a> Fn(&'a mut bool) -> egui::Window,
-        show: impl 'static + Send + FnMut(&egui::Ui),
-    ) {
-        let show = Mutex::new(show);
-        self.share.spawned_widgets.lock().pipe(|mut entries| {
-            entries.push(SpawnedWidgetInfo {
-                build_window: Box::new(configure),
-                show: Box::new(move |ui| show.lock()(ui)),
-            })
-        });
+        path: impl IntoIterator<Item = T>,
+        mut widget: impl FnMut(&egui::Ui) -> L + 'static,
+    ) -> Option<Box<FnShowWidget>>
+    where
+        T: Into<String>,
+        L: Into<WidgetRetain>,
+    {
+        let mut node = &mut *self.widget_menu_items.borrow_mut();
+        for seg in path {
+            let seg = seg.into();
+            node = node.children.entry(seg).or_default();
+        }
+
+        let show = Box::new(move |ui: &_| widget(ui).into());
+        node.draw.replace(show)
     }
+
+    /// Add a widget item to specified panel group with given order. It'll silently
+    /// replace the existing item if path is already exist.
+    ///
+    ///
+    pub fn spawn_panel_item<T, L>(
+        &self,
+        panel: PanelGroup,
+        slot: i32,
+        mut widget: impl FnMut(&egui::Ui) -> L + 'static,
+    ) -> Option<Box<FnShowWidget>>
+    where
+        L: Into<WidgetRetain>,
+    {
+        let mut widgets = self.widgets.borrow_mut();
+        let show = Box::new(move |ui: &_| widget(ui).into());
+        widgets.insert((panel, slot), show)
+    }
+
+    // TODO: `bind_console_command`, `output_to_console`, `show_console`, `toggle_console`
+    // - Adding basic console class.
+    // - Exposing godot APIs for these.
 
     /// Render viewport for current frame.
     ///
@@ -274,7 +424,7 @@ impl EguiBridge {
     /// # Panics
     ///
     ///
-    pub fn viewport_current_frame<R>(
+    pub fn viewport_immediate<R>(
         &self,
         id: ViewportId,
         builder: ViewportBuilder,
@@ -308,15 +458,17 @@ impl EguiBridge {
     ///     }
     /// );
     /// ```
-    pub fn spawn_viewport(
+    pub fn viewport_spawn<L>(
         &self,
         id: ViewportId,
         builder: ViewportBuilder,
-        show: impl FnMut(&egui::Context) -> bool + 'static + Send + Sync,
-    ) {
+        show: impl FnMut(&egui::Context) -> L + 'static + Send + Sync,
+    ) where
+        L: Into<WidgetRetain>,
+    {
         // Spawn a viewport which is retained as long as show returns true.
         self.share.spawned_viewports.lock().pipe(|mut table| {
-            let dispose = Arc::new(AtomicBool::new(false));
+            let dispose = Arc::new(Mutex::new(WidgetRetain::default()));
             let show_fn = Mutex::new(show);
 
             table.insert(
@@ -324,7 +476,7 @@ impl EguiBridge {
                 SpawnedViewportContext {
                     dispose: dispose.clone(),
                     repaint: Arc::new(move |ctx| {
-                        dispose.fetch_or(!show_fn.lock()(ctx), Relaxed);
+                        *dispose.lock() = show_fn.lock()(ctx).into();
                     }),
                     builder,
                 },
@@ -458,47 +610,10 @@ impl EguiBridge {
     fn finish_frame(&mut self) {
         let share = self.share.clone();
 
-        // Show main frame widgets:
-        //
-        // We temporarily take out of all widgets from array, to ensure no deadlock
-        // would occur!
-        let widgets = take(&mut *share.spawned_widgets.lock()).tap_mut(|widgets| {
-            widgets.retain_mut(|w| {
-                let mut keep_open = true;
-                let wnd = (w.build_window)(&mut keep_open);
-                let resp = wnd.show(&share.egui, |ui| (w.show)(ui));
-
-                let Some(resp) = resp else {
-                    // Widget is closed.
-                    return false;
-                };
-
-                if resp.response.gained_focus() || resp.response.clicked() {
-                    // 2024-02-22 08:02:10. Check if changing drawing order
-                    // meaningful.
-                    // - Seems handled by egui?
-                    // - 2024-02-22 08:02:15. Turns out within single viewport, window
-                    //   ordering is automatically handled by EGUI. Therefore we don't
-                    //   need any specific reordering here.
-                }
-
-                true
-            })
-        });
-
-        widgets.pipe(|mut widgets| {
-            // Not put it back to original array.
-            let mut lock = share.spawned_widgets.lock();
-
-            // Prevent allocation when possible.
-            widgets.extend(lock.drain(..));
-            *lock = widgets;
-        });
-
         // Deal with spawned viewports; in same manner.
         let viewports = take(&mut *share.spawned_viewports.lock()).tap_mut(|viewports| {
             viewports.retain(|id, value| {
-                if value.dispose.load(Relaxed) {
+                if *value.dispose.lock() == WidgetRetain::Dispose {
                     false
                 } else {
                     let ui_cb = value.repaint.clone();
@@ -593,8 +708,9 @@ impl EguiBridge {
         for id in remaining_viewports {
             match share.spawned_viewports.lock().entry(id) {
                 hash_map::Entry::Occupied(entry) => {
-                    if !entry.get().dispose.load(Relaxed) {
+                    if *entry.get().dispose.lock() == WidgetRetain::Retain {
                         // The widget didn't agree to close, so we put it back to the list.
+                        // Other than `Retain` treated as `Dispose`.
                         continue;
                     }
 

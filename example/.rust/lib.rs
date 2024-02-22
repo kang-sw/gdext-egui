@@ -41,7 +41,7 @@ impl INode for Showcase {
             .unwrap()
             .set_embedding_subwindows(false);
 
-        self.egui.bind_mut().spawn_viewport(
+        self.egui.bind_mut().viewport_spawn(
             ViewportId::from_hash_of(31),
             ViewportBuilder::default().with_title("Demo Viewport"),
             {
