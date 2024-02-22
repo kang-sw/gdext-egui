@@ -140,11 +140,23 @@ struct ViewportContext {
     info: egui::ViewportInfo,
 }
 
-pub type ViewportClose = AtomicU8;
+/// Closing steps
+///
+/// 1. Requested: Godot Window sends close signal => `ViewportContext::close_request`
+///    (=flag) is set to `VIEWPORT_CLOSE_REQUESTED`
+/// 2. Next start of frame: `VIEWPORT_CLOSE_REQUESTED` is detected, then it sets to
+///    `PENDING`, delivering `egui::ViewportEvent::Close` to make user detect if it's
+///    closing
+/// 3. If User don't want the viewport to be closed, user can send
+///    `ViewportCommand::CancelClose` to cancel the close request.
+/// 4. If not canceled, then the same frame, `PENDING` transitions to `CLOSE`, which will
+///    be disposed on next frame's `finish_frame` call.
+type ViewportClose = AtomicU8;
 
 const VIEWPORT_CLOSE_NONE: u8 = 0;
 const VIEWPORT_CLOSE_REQUESTED: u8 = 1;
 const VIEWPORT_CLOSE_PENDING: u8 = 2;
+const VIEWPORT_CLOSE_CLOSE: u8 = 3;
 
 /* ------------------------------------------ Godot Api ----------------------------------------- */
 
@@ -495,8 +507,9 @@ impl EguiBridge {
             };
 
             let scheduled = if let Some(viewport) = share.viewports.lock().get_mut(&vp_id) {
-                if viewport.close_request.load(Relaxed) == VIEWPORT_CLOSE_PENDING {
+                if viewport.close_request.load(Relaxed) == VIEWPORT_CLOSE_CLOSE {
                     // If this is `PENDING`, it means the user side renderer has already
+
                     // seen viewport close request, however, didn't deal with it, which
                     // means accepted disposal of viewport close.
 
@@ -770,8 +783,6 @@ impl EguiBridge {
                 }),
             );
 
-            // TODO: Bind `gd_painter.resized()`
-
             let gd_wnd = if id == ViewportId::ROOT {
                 // Attach directly to this component.
                 self.to_gd().add_child(gd_painter.clone().upcast());
@@ -790,7 +801,7 @@ impl EguiBridge {
                 gd_wnd.add_child(gd_painter.clone().upcast());
                 gd_painter.set_owner(gd_wnd.clone().upcast());
 
-                // TODO: Bind `gd_wnd.close_requested`
+                // Bind window close request.
                 let close_req = viewport.close_request.clone();
                 gd_wnd.connect(
                     "close_requested".into(),
@@ -849,7 +860,7 @@ impl EguiBridge {
                         // Ignore close signal to root ... It's simply not allowed!
                         godot_warn!("Root viewport received close request!");
                     } else if let Some(dispose) = &viewport.dispose {
-                        // Close the window.
+                        // Close the spawned window.
                         dispose.store(true, Relaxed);
                     } else {
                         // In any other cases; close signal is ignored. User can easily
@@ -936,7 +947,8 @@ impl EguiBridge {
                 CursorPosition(_pos) => {}
                 CursorGrab(_) => {}
                 CursorVisible(_) => {
-                    // TODO
+                    // TODO: How can we achieve this in safe manner?
+                    // - e.g. If user simply disposed EGUI after hiding cursor...
                 }
                 MousePassthrough(enabled) => {
                     window.set_flag(window::Flags::MOUSE_PASSTHROUGH, enabled);
@@ -945,6 +957,11 @@ impl EguiBridge {
                     // TODO: How?
                 }
             }
+        }
+
+        if viewport.close_request.load(Relaxed) == VIEWPORT_CLOSE_PENDING {
+            // Close request is accepted, so we should dispose this viewport.
+            viewport.close_request.store(VIEWPORT_CLOSE_CLOSE, Relaxed);
         }
 
         // Update viewport input from surface output.
@@ -1093,23 +1110,23 @@ impl EguiBridge {
 
             ds.cursor_set_shape(match output.platform_output.cursor_icon {
                 egui::CursorIcon::Default => CS::ARROW,
-                // egui::CursorIcon::None => todo!(),
+                // egui::CursorIcon::None =>
                 // egui::CursorIcon::ContextMenu => CursorShape::meu,
                 egui::CursorIcon::Help => CS::HELP,
                 egui::CursorIcon::PointingHand => CS::POINTING_HAND,
-                // egui::CursorIcon::Progress => todo!(),
+                // egui::CursorIcon::Progress =>
                 egui::CursorIcon::Wait => CS::WAIT,
-                // egui::CursorIcon::Cell => todo!(),
+                // egui::CursorIcon::Cell =>
                 egui::CursorIcon::Crosshair => CS::CROSS,
                 egui::CursorIcon::Text => CS::IBEAM,
                 egui::CursorIcon::VerticalText => CS::IBEAM,
                 // egui::CursorIcon::Alias => CS::,
-                // egui::CursorIcon::Copy => todo!(),
-                // egui::CursorIcon::Move => todo!(),
-                // egui::CursorIcon::NoDrop => todo!(),
+                // egui::CursorIcon::Copy =>
+                // egui::CursorIcon::Move =>
+                // egui::CursorIcon::NoDrop =>
                 egui::CursorIcon::NotAllowed => CS::FORBIDDEN,
                 // egui::CursorIcon::Grab => ,
-                // egui::CursorIcon::Grabbing => todo!(),
+                // egui::CursorIcon::Grabbing =>
                 egui::CursorIcon::AllScroll => CS::MOVE,
                 egui::CursorIcon::ResizeHorizontal => CS::HSIZE,
                 egui::CursorIcon::ResizeNeSw => CS::BDIAGSIZE,
@@ -1125,8 +1142,8 @@ impl EguiBridge {
                 egui::CursorIcon::ResizeNorthEast => CS::BDIAGSIZE,
                 egui::CursorIcon::ResizeColumn => CS::HSIZE,
                 egui::CursorIcon::ResizeRow => CS::VSIZE,
-                // egui::CursorIcon::ZoomIn => todo!(),
-                // egui::CursorIcon::ZoomOut => todo!(),
+                // egui::CursorIcon::ZoomIn =>
+                // egui::CursorIcon::ZoomOut =>
                 _cursor => CS::ARROW,
             });
         }

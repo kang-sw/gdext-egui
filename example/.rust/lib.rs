@@ -1,3 +1,8 @@
+use std::sync::{
+    atomic::{AtomicUsize, Ordering::Relaxed},
+    Arc,
+};
+
 use gdext_egui::{egui, ViewportBuilder, ViewportId};
 use godot::{engine, prelude::*};
 
@@ -17,6 +22,8 @@ struct Showcase {
 
     text_1: String,
     text_2: String,
+
+    count: Arc<AtomicUsize>,
 }
 
 #[godot_api]
@@ -44,6 +51,7 @@ impl INode2D for Showcase {
 
         let time = engine::Time::singleton();
         let tick = time.get_ticks_usec() as f64 / 1e6;
+        let count = self.count.clone();
 
         egui::Window::new("Example Window").show(ctx, |ui| {
             ui.label("hello, world!");
@@ -67,9 +75,20 @@ impl INode2D for Showcase {
             ViewportId::from_hash_of("Hah!"),
             ViewportBuilder::default().with_title("Hello~~"),
             move |ctx, _| {
+                let pending_close = ctx.input(|x| x.viewport().close_requested());
+
                 egui::Window::new("Window in Viewport!").show(ctx, |ui| {
                     ui.label("blah blah");
                     ui.label(format!("Now: {tick}"));
+
+                    if pending_close {
+                        count.fetch_add(1, Relaxed);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    }
+
+                    if count.load(Relaxed) > 0 {
+                        ui.heading("HAHA YOU CANNOT CLOSE ME!");
+                    }
                 });
             },
         );
