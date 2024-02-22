@@ -12,8 +12,8 @@ use std::{
 
 use educe::Educe;
 use egui::{
-    mutex::Mutex, DeferredViewportUiCallback, ViewportBuilder, ViewportClass, ViewportId,
-    ViewportIdMap,
+    mutex::Mutex, CursorIcon, DeferredViewportUiCallback, ViewportBuilder, ViewportClass,
+    ViewportId, ViewportIdMap,
 };
 use godot::{
     engine::{self, window, CanvasLayer, DisplayServer, ICanvasLayer, WeakRef},
@@ -57,6 +57,9 @@ pub struct EguiBridge {
 
     /// Setup scripts that was deferred until next frame end.
     setup_scripts: RefCell<Vec<Box<FnDeferredContextAccess>>>,
+
+    /// Determines the cursor shape of this frame.
+    cursor_shape: Option<egui::CursorIcon>,
 }
 
 #[derive(Clone)]
@@ -370,12 +373,12 @@ impl EguiBridge {
                 unreachable!();
             };
 
-            let Ok(this) = this.get_ref().try_to::<Gd<Self>>() else {
+            let Ok(mut this) = this.get_ref().try_to::<Gd<Self>>() else {
                 // It's just expired.
                 return;
             };
 
-            let this = this.bind();
+            let mut this = this.bind_mut();
 
             let p_src = this.share.egui.input(|x| x as *const _);
             let p_new = ctx.input(|x| x as *const _);
@@ -633,6 +636,51 @@ impl EguiBridge {
         // Handle disposed textures from output.
         for id in textures_freed {
             self.textures.free_texture(id);
+        }
+
+        // Handle cursor shape
+        if let Some(cursor) = self.cursor_shape.take() {
+            type CS = engine::display_server::CursorShape;
+            let mut ds = DisplayServer::singleton();
+
+            ds.cursor_set_shape(match cursor {
+                egui::CursorIcon::Default => CS::ARROW,
+                // egui::CursorIcon::None =>
+                // egui::CursorIcon::ContextMenu => CursorShape::meu,
+                egui::CursorIcon::Help => CS::HELP,
+                egui::CursorIcon::PointingHand => CS::POINTING_HAND,
+                // egui::CursorIcon::Progress =>
+                egui::CursorIcon::Wait => CS::WAIT,
+                // egui::CursorIcon::Cell =>
+                egui::CursorIcon::Crosshair => CS::CROSS,
+                egui::CursorIcon::Text => CS::IBEAM,
+                egui::CursorIcon::VerticalText => CS::IBEAM,
+                // egui::CursorIcon::Alias => CS::,
+                // egui::CursorIcon::Copy =>
+                // egui::CursorIcon::Move =>
+                // egui::CursorIcon::NoDrop =>
+                egui::CursorIcon::NotAllowed => CS::FORBIDDEN,
+                // egui::CursorIcon::Grab => ,
+                // egui::CursorIcon::Grabbing =>
+                egui::CursorIcon::AllScroll => CS::MOVE,
+                egui::CursorIcon::ResizeHorizontal => CS::HSIZE,
+                egui::CursorIcon::ResizeNeSw => CS::BDIAGSIZE,
+                egui::CursorIcon::ResizeNwSe => CS::FDIAGSIZE,
+                egui::CursorIcon::ResizeVertical => CS::VSIZE,
+                egui::CursorIcon::ResizeEast => CS::HSIZE,
+                egui::CursorIcon::ResizeSouthEast => CS::FDIAGSIZE,
+                egui::CursorIcon::ResizeSouth => CS::VSIZE,
+                egui::CursorIcon::ResizeSouthWest => CS::BDIAGSIZE,
+                egui::CursorIcon::ResizeWest => CS::HSIZE,
+                egui::CursorIcon::ResizeNorthWest => CS::FDIAGSIZE,
+                egui::CursorIcon::ResizeNorth => CS::VSIZE,
+                egui::CursorIcon::ResizeNorthEast => CS::BDIAGSIZE,
+                egui::CursorIcon::ResizeColumn => CS::HSIZE,
+                egui::CursorIcon::ResizeRow => CS::VSIZE,
+                // egui::CursorIcon::ZoomIn =>
+                // egui::CursorIcon::ZoomOut =>
+                _cursor => CS::ARROW,
+            });
         }
 
         // Finish this frame.
@@ -1050,7 +1098,7 @@ impl EguiBridge {
         self.share.egui.begin_frame(raw_input);
     }
 
-    fn viewport_end_frame(&self, id: ViewportId) {
+    fn viewport_end_frame(&mut self, id: ViewportId) {
         // Retrieve viewport-wise output.
         let mut output = self.share.egui.end_frame();
 
@@ -1098,7 +1146,7 @@ impl EguiBridge {
                 mutable_text_under_cursor,
 
                 // Handled by each viewport.
-                cursor_icon: _,
+                cursor_icon,
                 ime: _,
             } = take(&mut output.platform_output);
 
@@ -1120,53 +1168,16 @@ impl EguiBridge {
                 // We're not interested in widget outputs
             }
 
-            // NOTE: Intentionally disabling cursor shape control
-            // 1. It doesn't work currently.
-            // 2. For game engine; which highly likely to use customized cursors,
-            //    overriding default cursor feels a bit wrong.
-            #[cfg(any())]
-            if output.platform_output.cursor_icon != egui::CursorIcon::None {
-                type CS = CursorShape;
-                let mut ds = DisplayServer::singleton();
+            let overwrite_cursor = if self.cursor_shape.is_some() {
+                // Do not overwrite meaningful cursor with `None` or `Default`
+                !matches!(cursor_icon, CursorIcon::None | CursorIcon::Default)
+            } else {
+                // Prevent `None` cursor disturbing the engine's cursor control
+                cursor_icon != CursorIcon::None
+            };
 
-                ds.cursor_set_shape(match output.platform_output.cursor_icon {
-                    egui::CursorIcon::Default => CS::ARROW,
-                    // egui::CursorIcon::None =>
-                    // egui::CursorIcon::ContextMenu => CursorShape::meu,
-                    egui::CursorIcon::Help => CS::HELP,
-                    egui::CursorIcon::PointingHand => CS::POINTING_HAND,
-                    // egui::CursorIcon::Progress =>
-                    egui::CursorIcon::Wait => CS::WAIT,
-                    // egui::CursorIcon::Cell =>
-                    egui::CursorIcon::Crosshair => CS::CROSS,
-                    egui::CursorIcon::Text => CS::IBEAM,
-                    egui::CursorIcon::VerticalText => CS::IBEAM,
-                    // egui::CursorIcon::Alias => CS::,
-                    // egui::CursorIcon::Copy =>
-                    // egui::CursorIcon::Move =>
-                    // egui::CursorIcon::NoDrop =>
-                    egui::CursorIcon::NotAllowed => CS::FORBIDDEN,
-                    // egui::CursorIcon::Grab => ,
-                    // egui::CursorIcon::Grabbing =>
-                    egui::CursorIcon::AllScroll => CS::MOVE,
-                    egui::CursorIcon::ResizeHorizontal => CS::HSIZE,
-                    egui::CursorIcon::ResizeNeSw => CS::BDIAGSIZE,
-                    egui::CursorIcon::ResizeNwSe => CS::FDIAGSIZE,
-                    egui::CursorIcon::ResizeVertical => CS::VSIZE,
-                    egui::CursorIcon::ResizeEast => CS::HSIZE,
-                    egui::CursorIcon::ResizeSouthEast => CS::FDIAGSIZE,
-                    egui::CursorIcon::ResizeSouth => CS::VSIZE,
-                    egui::CursorIcon::ResizeSouthWest => CS::BDIAGSIZE,
-                    egui::CursorIcon::ResizeWest => CS::HSIZE,
-                    egui::CursorIcon::ResizeNorthWest => CS::FDIAGSIZE,
-                    egui::CursorIcon::ResizeNorth => CS::VSIZE,
-                    egui::CursorIcon::ResizeNorthEast => CS::BDIAGSIZE,
-                    egui::CursorIcon::ResizeColumn => CS::HSIZE,
-                    egui::CursorIcon::ResizeRow => CS::VSIZE,
-                    // egui::CursorIcon::ZoomIn =>
-                    // egui::CursorIcon::ZoomOut =>
-                    _cursor => CS::ARROW,
-                });
+            if overwrite_cursor {
+                self.cursor_shape = Some(cursor_icon);
             }
         }
 
