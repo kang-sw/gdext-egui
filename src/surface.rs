@@ -261,23 +261,29 @@ impl IControl for EguiViewportBridge {
                 Ok(event) => {
                     let key = event.get_keycode();
 
-                    if event.is_pressed() {
-                        self.on_event(egui::Event::Text(
-                            engine::Os::singleton()
-                                .get_keycode_string(event.get_key_label())
-                                .to_string(),
-                        ));
+                    // @See
+                    // https://github.com/godotengine/godot/blob/16d61427cab3a8e43f0a9a8ee724fc176b6433c6/scene/gui/text_edit.cpp#L2267
+                    let unicode = event.get_unicode();
+
+                    if event.is_pressed() && unicode >= 32 {
+                        let ch = std::char::from_u32(unicode as u32).unwrap();
+                        self.on_event(egui::Event::Text(ch.to_string()));
                     }
 
-                    let event = egui::Event::Key {
-                        key: key_to_egui(key).unwrap_or(egui::Key::F20),
+                    // if key == global::Key::
+
+                    let event = key_to_egui(key).map(|key| egui::Event::Key {
+                        key,
                         physical_key: key_to_egui(event.get_keycode()),
                         pressed: event.is_pressed(),
                         repeat: event.is_echo(),
                         modifiers: modifier_to_egui(event.get_modifiers_mask()),
-                    };
+                    });
 
-                    self.on_event(event);
+                    if let Some(event) = event {
+                        self.on_event(event);
+                    }
+
                     break 'accept true;
                 }
             };
@@ -307,7 +313,6 @@ impl EguiViewportBridge {
     }
 
     pub fn draw(&mut self, textures: &TextureLibrary, shapes: Vec<egui::epaint::ClippedPrimitive>) {
-        // TODO: Draw all meshes
         let mut gd_rs = RenderingServer::singleton();
 
         // Performs bookkeeping - Make `self.canvas_items` be same length as input shapes.
@@ -411,7 +416,7 @@ fn modifier_to_egui(modifier: KeyModifierMask) -> egui::Modifiers {
     let has = |x: KeyModifierMask| modifier.ord() & x.ord() != 0;
 
     out.shift = has(KeyModifierMask::SHIFT);
-    out.ctrl = has(KeyModifierMask::CMD_OR_CTRL);
+    out.ctrl = has(KeyModifierMask::CTRL);
     out.command = has(KeyModifierMask::CMD_OR_CTRL);
     out.mac_cmd = has(KeyModifierMask::CMD_OR_CTRL);
     out.alt = has(KeyModifierMask::ALT);
