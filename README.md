@@ -11,6 +11,10 @@ godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
 gdext-egui = { git = "https://github.com/kang-sw/gdext-egui", branch = "master" }
 ```
 
+# Run Example
+
+Start Godot 4.2.1 at [`example/`](example/) directory, giving first argument [`Showcase.tscn`](example/Showcase.tscn)
+
 # Features
 
 - [ ] Viewport support
@@ -23,6 +27,4 @@ gdext-egui = { git = "https://github.com/kang-sw/gdext-egui", branch = "master" 
 - [ ] Utilities
   - [ ] Call from GdScript
   - [ ] Property display (for editor integration)
-- [ ] Publish to crates.io (when [`gdext`](https://github.com/godot-rust/gdext) 0.1 is ready)
-
 

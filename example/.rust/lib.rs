@@ -1,5 +1,5 @@
 use gdext_egui::{egui, ViewportBuilder, ViewportId};
-use godot::prelude::*;
+use godot::{engine, prelude::*};
 
 struct MyExtension;
 
@@ -39,17 +39,24 @@ impl INode2D for Showcase {
         let egui = egui.bind();
         let ctx = egui.current_frame();
 
+        let time = engine::Time::singleton();
+        let tick = time.get_ticks_usec() as f64 / 1e6;
+
         egui::Window::new("Example Window").show(ctx, |ui| {
             ui.label("hello, world!");
+            ui.label(format!("Now: {tick}"));
         });
 
         ctx.show_viewport_deferred(
             ViewportId::from_hash_of("Hah!"),
             ViewportBuilder::default().with_title("Hello~~"),
-            |ctx, _| {
+            move |ctx, _| {
                 egui::Window::new("Window in Viewport!").show(ctx, |ui| {
                     ui.label("blah blah");
+                    ui.label(format!("Now: {tick}"));
                 });
+
+                ctx.request_repaint();
             },
         );
     }

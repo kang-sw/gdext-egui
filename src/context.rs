@@ -956,7 +956,11 @@ impl EguiBridge {
 
             // TODO: Collect input from viewport.
 
-            raw_input.screen_rect = viewport.info.inner_rect;
+            raw_input.screen_rect = viewport
+                .info
+                .inner_rect
+                .map(|x| egui::Rect::from_min_size(egui::Pos2::ZERO, x.size()));
+
             raw_input.focused = viewport.info.focused.unwrap_or_default();
             raw_input.viewport_id = id;
 
