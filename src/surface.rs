@@ -2,7 +2,7 @@ use egui::ahash::HashMap;
 use godot::{
     engine::{
         self,
-        control::{LayoutPreset, MouseFilter},
+        control::{FocusMode, LayoutPreset, MouseFilter},
         global::{self, KeyModifierMask},
         notify::ControlNotification,
         Control, DisplayServer, IControl, ImageTexture, InputEventKey, InputEventMouseButton,
@@ -187,7 +187,38 @@ impl IControl for EguiViewportBridge {
     }
 
     fn input(&mut self, event: Gd<engine::InputEvent>) {
-        let Some(ctx) = &self.context else { return };
+        if self.try_consume_input(event) {
+            self.mark_input_handled();
+        }
+    }
+}
+
+impl EguiViewportBridge {
+    fn on_event(&self, event: egui::Event) {
+        if let Some(ev) = self.fwd_event.as_deref() {
+            ev(event);
+        }
+    }
+
+    fn mark_input_handled(&mut self) {
+        if let Some(mut vp) = self.to_gd().get_viewport() {
+            vp.set_input_as_handled();
+        }
+    }
+
+    pub fn initiate(&mut self, ctx: egui::Context, on_event: Box<dyn Fn(egui::Event)>) {
+        self.context = Some(ctx);
+        self.fwd_event = Some(on_event);
+    }
+
+    /// Try to consume the input once, and returns whether the input was consumed or not.
+    ///
+    /// NOTE: This was separated from virtual `input` method, to make `tool` input
+    /// handling available.
+    pub fn try_consume_input(&mut self, event: Gd<engine::InputEvent>) -> bool {
+        let Some(ctx) = &self.context else {
+            return false;
+        };
 
         let event = match event.try_cast::<InputEventMouseMotion>() {
             Err(event) => event,
@@ -196,11 +227,7 @@ impl IControl for EguiViewportBridge {
                     event.get_position().to_alternative(),
                 ));
 
-                if ctx.wants_pointer_input() {
-                    self.mark_input_handled();
-                }
-
-                return;
+                return ctx.wants_pointer_input();
             }
         };
 
@@ -208,7 +235,7 @@ impl IControl for EguiViewportBridge {
             Err(event) => event,
             Ok(event) => {
                 if event.is_canceled() {
-                    return;
+                    return false;
                 }
 
                 let modifiers = modifier_to_egui(event.get_modifiers_mask());
@@ -251,7 +278,7 @@ impl IControl for EguiViewportBridge {
                         horizontal: true,
                         delta: -factor,
                     },
-                    _ => return,
+                    _ => return false,
                 };
 
                 let event = match r {
@@ -273,13 +300,13 @@ impl IControl for EguiViewportBridge {
 
                 self.on_event(event);
 
-                if ctx.wants_pointer_input() {
+                return if ctx.wants_pointer_input() {
                     // We grab focus only with clicks
                     self.to_gd().grab_focus();
-                    self.mark_input_handled();
-                }
-
-                return;
+                    true
+                } else {
+                    false
+                };
             }
         };
 
@@ -302,12 +329,7 @@ impl IControl for EguiViewportBridge {
 
                     if let Some(event) = event {
                         self.on_event(event);
-
-                        if ctx.wants_keyboard_input() {
-                            self.mark_input_handled();
-                        }
-
-                        return;
+                        return ctx.wants_keyboard_input();
                     }
                 }
 
@@ -334,35 +356,14 @@ impl IControl for EguiViewportBridge {
                     self.on_event(event);
                 }
 
-                if ctx.wants_keyboard_input() {
-                    self.mark_input_handled();
-                }
-
-                return;
+                return ctx.wants_keyboard_input();
             }
         };
 
         // Every event catch was exhausted. Simply ignore it!
         let _ = event;
-    }
-}
 
-impl EguiViewportBridge {
-    fn on_event(&self, event: egui::Event) {
-        if let Some(ev) = self.fwd_event.as_deref() {
-            ev(event);
-        }
-    }
-
-    fn mark_input_handled(&mut self) {
-        if let Some(mut vp) = self.to_gd().get_viewport() {
-            vp.set_input_as_handled();
-        }
-    }
-
-    pub fn initiate(&mut self, ctx: egui::Context, on_event: Box<dyn Fn(egui::Event)>) {
-        self.context = Some(ctx);
-        self.fwd_event = Some(on_event);
+        false
     }
 
     pub fn draw(&mut self, textures: &TextureLibrary, shapes: Vec<egui::epaint::ClippedPrimitive>) {

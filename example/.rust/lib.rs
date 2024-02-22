@@ -32,8 +32,6 @@ struct Showcase {
 impl INode for Showcase {
     fn ready(&mut self) {
         self.egui.init(gdext_egui::EguiBridge::new_alloc());
-        self.egui.bind_mut().setup_context(|ctx| {
-        });
 
         let mut gd_self = self.to_gd();
         gd_self.add_child(self.egui.clone().upcast());
