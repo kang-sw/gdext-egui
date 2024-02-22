@@ -3,23 +3,22 @@ use std::{
     collections::{hash_map, HashSet, VecDeque},
     mem::take,
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering::Relaxed},
+        atomic::{AtomicBool, AtomicU8, Ordering::Relaxed},
         mpsc, Arc,
     },
     thread::ThreadId,
     time::{Duration, Instant},
 };
 
-use derive_setters::Setters;
 use educe::Educe;
 use egui::{
-    ahash::HashMap, mutex::Mutex, DeferredViewportUiCallback, FullOutput, ViewportBuilder,
-    ViewportClass, ViewportId, ViewportIdMap,
+    mutex::Mutex, DeferredViewportUiCallback, ViewportBuilder, ViewportClass, ViewportId,
+    ViewportIdMap,
 };
 use godot::{
     engine::{
-        self, control::LayoutPreset, display_server::CursorShape, window, CanvasLayer, Control,
-        DisplayServer, ICanvasLayer, WeakRef,
+        self, control::LayoutPreset, display_server::CursorShape, window, DisplayServer,
+        ICanvasLayer, WeakRef,
     },
     prelude::*,
 };
@@ -58,6 +57,9 @@ pub struct EguiBridge {
     ///
     /// Lock order MUST be `share.viewports` -> `painters.`
     surfaces: RefCell<ViewportIdMap<SurfaceContext>>,
+
+    /// Setup scripts that was deferred until next frame end.
+    setup_scripts: RefCell<Vec<Box<dyn FnOnce(&egui::Context) + 'static>>>,
 }
 
 #[derive(Clone)]
@@ -195,7 +197,7 @@ impl EguiBridge {
     /// later.
     pub fn context_intra_frame(&self, setter: impl FnOnce(&egui::Context) + 'static + Send) {
         if self.share.is_in_frame() {
-            // TODO: Defer setup script
+            self.setup_scripts.borrow_mut().push(Box::new(setter));
         } else {
             setter(&self.share.egui);
         }
@@ -582,7 +584,7 @@ impl EguiBridge {
 
         debug_assert!(shapes.is_empty(), "logic error - shape is viewport-wise");
 
-        // TODO: Handle platform outputs accumulated from all viewports.
+        // Handle platform outputs accumulated from all viewports.
         {
             let egui::PlatformOutput {
                 open_url,
@@ -1150,6 +1152,11 @@ impl EguiBridge {
 
         // Accumulate outputs to primary output.
         self.share.full_output.lock().append(output);
+
+        // Call setup scripts that was queued during frame.
+        for script in self.setup_scripts.borrow_mut().drain(..) {
+            script(&self.share.egui);
+        }
     }
 
     /// Start frame in thread-safe manner.
