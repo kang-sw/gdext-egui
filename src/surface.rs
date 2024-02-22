@@ -37,7 +37,6 @@ impl TextureLibrary {
             payload.resize(src.image.bytes_per_pixel() * src.image.width() * src.image.height());
 
             let format = match &src.image {
-                // SAFETY: Using unsafe to reinterpret slice bufers to byte array.
                 egui::ImageData::Color(x) => {
                     // We just assume that the image is in RGBA8 format.
                     let dst = payload.as_mut_slice();
@@ -148,9 +147,6 @@ impl Drop for EguiViewportBridge {
 
 #[godot_api]
 impl IControl for EguiViewportBridge {
-    // TODO: Forward every input events to the egui context.
-    // - If required (i.e. EGUI is interested in keyboard/mouse input), consume it.
-
     fn ready(&mut self) {
         self.base_mut().set_focus_mode(FocusMode::CLICK);
     }
