@@ -3,7 +3,7 @@ use std::{
     collections::{hash_map, HashSet, VecDeque},
     mem::take,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
+        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering::Relaxed},
         mpsc, Arc,
     },
     thread::ThreadId,
@@ -18,8 +18,8 @@ use egui::{
 };
 use godot::{
     engine::{
-        self, control::LayoutPreset, window, CanvasLayer, Control, DisplayServer, ICanvasLayer,
-        WeakRef,
+        self, control::LayoutPreset, display_server::CursorShape, window, CanvasLayer, Control,
+        DisplayServer, ICanvasLayer, WeakRef,
     },
     prelude::*,
 };
@@ -126,6 +126,9 @@ struct ViewportContext {
     /// Dispose context, if this is spawned viewport.
     dispose: Option<Arc<AtomicBool>>,
 
+    /// Close request status
+    close_request: Arc<ViewportClose>,
+
     /// Viewport commands pending apply. When should be recreated, the second parameter
     /// set to [`Some`].
     updates: Vec<egui::ViewportCommand>,
@@ -136,6 +139,12 @@ struct ViewportContext {
     /// Cached viewport information, that we're currently updating on.
     info: egui::ViewportInfo,
 }
+
+pub type ViewportClose = AtomicU8;
+
+const VIEWPORT_CLOSE_NONE: u8 = 0;
+const VIEWPORT_CLOSE_REQUESTED: u8 = 1;
+const VIEWPORT_CLOSE_PENDING: u8 = 2;
 
 /* ------------------------------------------ Godot Api ----------------------------------------- */
 
@@ -485,11 +494,18 @@ impl EguiBridge {
                 break;
             };
 
-            // Don't need to check the result; as it can be a viewport created inside
-            // rendering loop; which is perfectly valid egui API call.
-            let _ = remaining_viewports.remove(&vp_id);
-
             let scheduled = if let Some(viewport) = share.viewports.lock().get_mut(&vp_id) {
+                if viewport.close_request.load(Relaxed) == VIEWPORT_CLOSE_PENDING {
+                    // If this is `PENDING`, it means the user side renderer has already
+                    // seen viewport close request, however, didn't deal with it, which
+                    // means accepted disposal of viewport close.
+
+                    // Simply by not invoking subsequent rendering logic, (more precisely,
+                    // not removing viewport ID from `remaining_viewports`), we can safely
+                    // dispose this viewport.
+                    continue;
+                }
+
                 // Commands are only meaningful when viewport already present.
                 viewport.updates.extend(vp_out.commands);
 
@@ -497,11 +513,16 @@ impl EguiBridge {
                     viewport.repaint_at = None; // Clear repaint timer until next request
                     true
                 } else {
-                    false
+                    // If viewport is being closed now, force repainting it.
+                    viewport.close_request.load(Relaxed) == VIEWPORT_CLOSE_REQUESTED
                 }
             } else {
                 false
             };
+
+            // Don't need to check if remove succeeded; as it can be a viewport created
+            // inside rendering loop; which is perfectly valid egui API call.
+            let _ = remaining_viewports.remove(&vp_id);
 
             // Validate viewport.
             self.viewport_validate(vp_id, Some((vp_out.parent, vp_out.builder)));
@@ -551,13 +572,33 @@ impl EguiBridge {
         // TODO: Handle platform outputs accumulated from all viewports.
         {
             let egui::PlatformOutput {
-                cursor_icon,
                 open_url,
                 copied_text,
                 events,
                 mutable_text_under_cursor,
-                ime,
+
+                // Handled by each viewport.
+                cursor_icon: _,
+                ime: _,
             } = platform_output;
+
+            let mut ds = DisplayServer::singleton();
+
+            if let Some(url) = open_url {
+                open::that(url.url).ok();
+            }
+
+            if !copied_text.is_empty() {
+                ds.clipboard_set(copied_text.into());
+            }
+
+            if mutable_text_under_cursor {
+                // XXX: Do we need virtual board ...?
+            }
+
+            for _event in events {
+                // We're not interested in widget outputs
+            }
         }
 
         // Handle new textures from output.
@@ -697,6 +738,7 @@ impl EguiBridge {
                     repaint_at: Some(Instant::now()),
                     dispose: spawned_dispose,
                     rx_update,
+                    close_request: Default::default(),
                     builder: init,
                     updates,
                     paint_this_frame: None,
@@ -749,6 +791,14 @@ impl EguiBridge {
                 gd_painter.set_owner(gd_wnd.clone().upcast());
 
                 // TODO: Bind `gd_wnd.close_requested`
+                let close_req = viewport.close_request.clone();
+                gd_wnd.connect(
+                    "close_requested".into(),
+                    Callable::from_fn("SubscribeClose", move |_| {
+                        close_req.store(VIEWPORT_CLOSE_REQUESTED, Relaxed);
+                        Ok(Variant::nil())
+                    }),
+                );
 
                 // NOTE: List of recreation-only flags
                 // - active
@@ -811,6 +861,8 @@ impl EguiBridge {
                         // Cancel the close signal.
                         dispose.store(false, Relaxed);
                     }
+
+                    viewport.close_request.store(VIEWPORT_CLOSE_NONE, Relaxed);
                 }
                 Title(new_title) => {
                     window.set_title(new_title.into());
@@ -977,6 +1029,20 @@ impl EguiBridge {
 
             // Just set repaint schedule to far future.
             viewport.repaint_at = Some(Instant::now() + Duration::from_secs(3600));
+
+            // If close request is delivered from platform, forward the event to EGUI that
+            // allow user logic to handle this. (e.g. cancel the close request)
+            if viewport.close_request.load(Relaxed) == VIEWPORT_CLOSE_REQUESTED {
+                viewport
+                    .close_request
+                    .store(VIEWPORT_CLOSE_PENDING, Relaxed);
+                raw_input
+                    .viewports
+                    .get_mut(&id)
+                    .unwrap()
+                    .events
+                    .push(egui::ViewportEvent::Close);
+            }
         }
 
         self.share.egui.begin_frame(raw_input);
@@ -1005,6 +1071,65 @@ impl EguiBridge {
             // It's just okay to fail.
             tx.send(egui.tessellate(paints, ppi)).ok();
         });
+
+        let mut gd_wnd = self
+            .surfaces
+            .borrow_mut()
+            .get(&id)
+            .and_then(|x| x.painter.get_window())
+            .expect("A painter should be spawned under any valid window!");
+
+        if let Some(ime) = output.platform_output.ime.take() {
+            // XXX: Is calling this every frame safe?
+            gd_wnd.set_ime_active(true);
+            gd_wnd.set_ime_position(ime.cursor_rect.min.to_alternative());
+        } else {
+            gd_wnd.set_ime_active(false);
+        }
+
+        if output.platform_output.cursor_icon != egui::CursorIcon::None {
+            type CS = CursorShape;
+            let mut ds = DisplayServer::singleton();
+
+            ds.cursor_set_shape(match output.platform_output.cursor_icon {
+                egui::CursorIcon::Default => CS::ARROW,
+                // egui::CursorIcon::None => todo!(),
+                // egui::CursorIcon::ContextMenu => CursorShape::meu,
+                egui::CursorIcon::Help => CS::HELP,
+                egui::CursorIcon::PointingHand => CS::POINTING_HAND,
+                // egui::CursorIcon::Progress => todo!(),
+                egui::CursorIcon::Wait => CS::WAIT,
+                // egui::CursorIcon::Cell => todo!(),
+                egui::CursorIcon::Crosshair => CS::CROSS,
+                egui::CursorIcon::Text => CS::IBEAM,
+                egui::CursorIcon::VerticalText => CS::IBEAM,
+                // egui::CursorIcon::Alias => CS::,
+                // egui::CursorIcon::Copy => todo!(),
+                // egui::CursorIcon::Move => todo!(),
+                // egui::CursorIcon::NoDrop => todo!(),
+                egui::CursorIcon::NotAllowed => CS::FORBIDDEN,
+                // egui::CursorIcon::Grab => ,
+                // egui::CursorIcon::Grabbing => todo!(),
+                egui::CursorIcon::AllScroll => CS::MOVE,
+                egui::CursorIcon::ResizeHorizontal => CS::HSIZE,
+                egui::CursorIcon::ResizeNeSw => CS::BDIAGSIZE,
+                egui::CursorIcon::ResizeNwSe => CS::FDIAGSIZE,
+                egui::CursorIcon::ResizeVertical => CS::VSIZE,
+                egui::CursorIcon::ResizeEast => CS::HSIZE,
+                egui::CursorIcon::ResizeSouthEast => CS::FDIAGSIZE,
+                egui::CursorIcon::ResizeSouth => CS::VSIZE,
+                egui::CursorIcon::ResizeSouthWest => CS::BDIAGSIZE,
+                egui::CursorIcon::ResizeWest => CS::HSIZE,
+                egui::CursorIcon::ResizeNorthWest => CS::FDIAGSIZE,
+                egui::CursorIcon::ResizeNorth => CS::VSIZE,
+                egui::CursorIcon::ResizeNorthEast => CS::BDIAGSIZE,
+                egui::CursorIcon::ResizeColumn => CS::HSIZE,
+                egui::CursorIcon::ResizeRow => CS::VSIZE,
+                // egui::CursorIcon::ZoomIn => todo!(),
+                // egui::CursorIcon::ZoomOut => todo!(),
+                _cursor => CS::ARROW,
+            });
+        }
 
         // Accumulate outputs to primary output.
         self.share.full_output.lock().append(output);
