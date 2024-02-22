@@ -1,0 +1,13 @@
+[package]
+name = "gdext_egui_example"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+name = "gdext_egui_example"
+path = "lib.rs"
+
+[dependencies]
+godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
+gdext-egui = { path = "../.." }

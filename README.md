@@ -1,3 +1,5 @@
+# `gdext-egui` egui backend implementation for Godot 4
+
 
 
 # Usage
@@ -8,12 +10,6 @@ In Cargo.toml, under the `[dependencies]` tab
 godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
 gdext-egui = { git = "https://github.com/kang-sw/gdext-egui", branch = "master" }
 ```
-
-To primary class `EguiBridge` be correctly registered, in any of your gdextension source
-code, `EguiBridge::new_alloc()` should be referred within any reachable code path. After
-that, you can freely write `egui` code using `EguiBridge::egui_context()`.
-
-> TODO: Add Usage
 
 # Features
 
