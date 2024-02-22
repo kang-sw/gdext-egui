@@ -499,13 +499,9 @@ impl EguiBridge {
                 break;
             };
 
-            if !remaining_viewports.remove(&vp_id) {
-                // FIXME
-
-                // This viewport seems created multiple times ...
-                godot_warn!("Viewport {vp_id:?} declared multiple times from different root");
-                continue;
-            }
+            // Don't need to check the result; as it can be a viewport created inside
+            // rendering loop; which is perfectly valid egui API call.
+            let _ = remaining_viewports.remove(&vp_id);
 
             let scheduled = if let Some(viewport) = share.viewports.lock().get_mut(&vp_id) {
                 // Commands are only meaningful when viewport already present.
