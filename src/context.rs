@@ -25,7 +25,7 @@ use godot::{
 use tap::prelude::{Pipe, Tap};
 use with_drop::with_drop;
 
-use crate::{default, helpers::ToCounterpart, painter};
+use crate::{default, helpers::ToCounterpart, surface};
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                             BRIDGE                                             */
@@ -47,7 +47,7 @@ pub struct EguiBridge {
     pub max_texture_bits: u8,
 
     /// Texture storage
-    textures: painter::TextureLibrary,
+    textures: surface::TextureLibrary,
 
     /// Pending intra-frame access methods
 
@@ -62,7 +62,7 @@ pub struct EguiBridge {
 #[derive(Clone)]
 struct PainterContext {
     /// Actual painter window.
-    painter: Gd<painter::EguiViewportBridge>,
+    painter: Gd<surface::EguiViewportBridge>,
 
     /// Container window if exist. (All widgets without root)
     window: Option<Gd<engine::Window>>,
@@ -686,7 +686,7 @@ impl EguiBridge {
             viewport.rx_update = rx_viewport;
 
             // Rebuild UI.
-            let mut gd_painter = painter::EguiViewportBridge::new_alloc();
+            let mut gd_painter = surface::EguiViewportBridge::new_alloc();
             gd_painter.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
 
             let ctx = self.share.egui.clone();
@@ -936,8 +936,7 @@ impl EguiBridge {
             let mut viewport = self.share.viewports.lock();
             let viewport = viewport.get_mut(&id).unwrap();
 
-            // TODO: Collect input from viewport.
-
+            raw_input.events.extend(viewport.rx_update.try_iter());
             raw_input.screen_rect = viewport
                 .info
                 .inner_rect

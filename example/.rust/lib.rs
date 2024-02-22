@@ -55,8 +55,6 @@ impl INode2D for Showcase {
                     ui.label("blah blah");
                     ui.label(format!("Now: {tick}"));
                 });
-
-                ctx.request_repaint();
             },
         );
     }

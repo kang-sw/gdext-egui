@@ -10,7 +10,7 @@ macro_rules! symbol_string {
 }
 
 pub mod context;
-mod painter;
+mod surface;
 
 pub extern crate egui;
 
