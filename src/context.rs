@@ -56,11 +56,11 @@ pub struct EguiBridge {
     /// # NOTE
     ///
     /// Lock order MUST be `share.viewports` -> `painters.`
-    painters: Mutex<ViewportIdMap<PainterContext>>,
+    surfaces: Mutex<ViewportIdMap<SurfaceContext>>,
 }
 
 #[derive(Clone)]
-struct PainterContext {
+struct SurfaceContext {
     /// Actual painter window.
     painter: Gd<surface::EguiViewportBridge>,
 
@@ -516,7 +516,7 @@ impl EguiBridge {
         // Deal with removed viewports
         for id in remaining_viewports {
             // Painter should be freed first, then viewport.
-            Self::free_painter(self.painters.lock().remove(&id));
+            Self::free_surface(self.surfaces.lock().remove(&id));
 
             // Spawned viewports may never be removed as long as it is not disposed, since
             // the main loop guarantees to keep it alive by calling `show_viewport_deferred`
@@ -562,7 +562,7 @@ impl EguiBridge {
         }
 
         // Paint all viewports
-        for (id, mut paint) in self.painters.lock().clone() {
+        for (id, mut paint) in self.surfaces.lock().clone() {
             let Some(rx_primitives) = self
                 .share
                 .viewports
@@ -595,7 +595,7 @@ impl EguiBridge {
         self.share.finish_frame();
     }
 
-    fn free_painter(x: Option<PainterContext>) {
+    fn free_surface(x: Option<SurfaceContext>) {
         if let Some(mut x) = x {
             x.painter.queue_free();
 
@@ -611,7 +611,7 @@ impl EguiBridge {
         build_with_parent: Option<(ViewportId, ViewportBuilder)>,
     ) {
         // Checkout painter
-        let mut painter = with_drop(self.painters.lock().remove(&id), Self::free_painter);
+        let mut surface = with_drop(self.surfaces.lock().remove(&id), Self::free_surface);
 
         // Check if this is from spawned viewports
         let spawned_dispose = self
@@ -678,8 +678,8 @@ impl EguiBridge {
             }
         };
 
-        if painter.is_none() || should_rebuild {
-            drop(painter.take());
+        if surface.is_none() || should_rebuild {
+            drop(surface.take());
 
             // Create channel between new viewport and painter.
             let (tx_viewport, rx_viewport) = mpsc::channel();
@@ -745,20 +745,20 @@ impl EguiBridge {
                 Some(gd_wnd)
             };
 
-            *painter = Some(PainterContext {
+            *surface = Some(SurfaceContext {
                 painter: gd_painter,
                 window: gd_wnd,
             });
         }
 
-        let Some(painter) = painter.into_inner() else {
+        let Some(surface) = surface.into_inner() else {
             unreachable!()
         };
 
         for command in viewport.updates.drain(..) {
             use egui::ViewportCommand::*;
 
-            let Some(mut window) = painter.window.clone() else {
+            let Some(mut window) = surface.window.clone() else {
                 // Root viewport won't receive any viewport commands.
                 continue;
             };
@@ -865,12 +865,12 @@ impl EguiBridge {
             }
         }
 
-        // Update viewport input from painter output.
+        // Update viewport input from surface output.
         'wnd: {
-            let gd_wnd = match painter.window.clone() {
+            let gd_wnd = match surface.window.clone() {
                 Some(wnd) => wnd,
                 None => {
-                    if let Some(wnd) = painter.painter.get_window() {
+                    if let Some(wnd) = surface.painter.get_window() {
                         wnd
                     } else {
                         break 'wnd;
@@ -881,8 +881,8 @@ impl EguiBridge {
             let info = &mut viewport.info;
 
             let inner_pos =
-                Vector2::from_vector2i(gd_wnd.get_position()) + painter.painter.get_position();
-            let inner_size = painter.painter.get_size();
+                Vector2::from_vector2i(gd_wnd.get_position()) + surface.painter.get_position();
+            let inner_size = surface.painter.get_size();
 
             let gd_ds = DisplayServer::singleton();
             let id_screen = gd_ds
@@ -922,9 +922,9 @@ impl EguiBridge {
             .viewports
             .insert(id, input);
 
-        // Checkin painter
-        self.painters.lock().pipe(|mut x| {
-            x.entry(id).or_insert(painter);
+        // Checkin surface again.
+        self.surfaces.lock().pipe(|mut x| {
+            x.entry(id).or_insert(surface);
         });
     }
 

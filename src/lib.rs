@@ -1,4 +1,3 @@
-#[macro_export]
 macro_rules! symbol_string {
     ($base:ty, $ident:ident) => {{
         // Just ensure ident exist
