@@ -730,14 +730,6 @@ impl EguiBridge {
         // Checkout painter
         let mut surface = with_drop(self.surfaces.borrow_mut().remove(&id), Self::free_surface);
 
-        // Check if this is from spawned viewports
-        let spawned_dispose = self
-            .share
-            .spawned_viewports
-            .lock()
-            .get(&id)
-            .map(|x| x.dispose.clone());
-
         // Spawn context if viewport id not exist
         let mut should_rebuild = false;
         let mut viewport_lock = self.share.viewports.lock();
