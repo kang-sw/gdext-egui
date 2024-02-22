@@ -1,18 +1,17 @@
-use std::sync::mpsc;
-
 use godot::{engine::Control, prelude::*};
 
 /* ----------------------------------------- Texture Lib ---------------------------------------- */
 
+#[derive(Default)]
 pub struct TextureLibrary {}
 
 impl TextureLibrary {
-    pub fn update_texture(id: egui::TextureId, delta: egui::epaint::ImageDelta) {
-        todo!()
+    pub fn update_texture(&mut self, id: egui::TextureId, delta: egui::epaint::ImageDelta) {
+        // TODO:
     }
 
-    pub fn free_texture(id: egui::TextureId) {
-        todo!()
+    pub fn free_texture(&mut self, id: egui::TextureId) {
+        // TODO:
     }
 }
 
@@ -30,7 +29,7 @@ impl EguiViewportBridge {
         // TODO:
     }
 
-    pub fn draw(&mut self, textures: &TextureLibrary, shapes: Vec<egui::epaint::ClippedShape>) {
+    pub fn draw(&mut self, textures: &TextureLibrary, shapes: Vec<egui::epaint::ClippedPrimitive>) {
         // TODO:
     }
 }

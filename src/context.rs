@@ -46,6 +46,9 @@ pub struct EguiBridge {
     #[init(default = 13)]
     pub max_texture_bits: u8,
 
+    /// Texture storage
+    textures: painter::TextureLibrary,
+
     /// Actual Godot Nodes for realization of viewports.
     ///
     /// # NOTE
@@ -54,6 +57,7 @@ pub struct EguiBridge {
     painters: Mutex<ViewportIdMap<PainterContext>>,
 }
 
+#[derive(Clone)]
 struct PainterContext {
     /// Actual painter window.
     painter: Gd<painter::EguiViewportBridge>,
@@ -109,9 +113,6 @@ struct SpawnedViewportContext {
 struct ViewportContext {
     /// Repainted when time point reaches here.
     repaint_at: Option<Instant>,
-
-    /// Repaint method, that will be called when ready.
-    repaint_with: Option<Arc<DeferredViewportUiCallback>>,
 
     /// Any input captures from viewport.
     rx_update: mpsc::Receiver<egui::Event>,
@@ -517,20 +518,96 @@ impl EguiBridge {
             }
         }
 
+        // Deal with removed viewports
+        for id in remaining_viewports {
+            // Painter should be freed first, then viewport.
+            Self::free_painter(self.painters.lock().remove(&id));
+
+            // Spawned viewports may never be removed as long as it is not disposed, since
+            // the main loop guarantees to keep it alive by calling `show_viewport_deferred`
+            // every frame.
+            debug_assert!(!share.spawned_viewports.lock().contains_key(&id));
+
+            // Remove viewport from context. Assertion here since we've retrieved
+            // remaining_viewports from viewport list itself, any 'subtractive'
+            // modification on viewports list is internal logic error!
+            assert!(share.viewports.lock().remove(&id).is_some());
+        }
+
+        // Cleanup full_output for next frame.
+        let egui::FullOutput {
+            platform_output,
+            textures_delta:
+                egui::TexturesDelta {
+                    set: textures_created,
+                    free: textures_freed,
+                },
+            shapes,
+            pixels_per_point: _,
+            viewport_output: _,
+        } = take(&mut *self.share.full_output.lock());
+
+        debug_assert!(shapes.is_empty(), "logic error - shape is viewport-wise");
+
         // TODO: Handle platform outputs accumulated from all viewports.
+        {
+            let egui::PlatformOutput {
+                cursor_icon,
+                open_url,
+                copied_text,
+                events,
+                mutable_text_under_cursor,
+                ime,
+            } = platform_output;
+        }
 
-        // TODO: Cleanup full_output for next frame.
+        // Handle new textures from output.
+        for (id, delta) in textures_created {
+            self.textures.update_texture(id, delta);
+        }
 
-        // TODO: Handle new textures from output.
+        // Paint all viewports
+        for (id, mut paint) in self.painters.lock().clone() {
+            let Some(rx_primitives) = self
+                .share
+                .viewports
+                .lock()
+                .get_mut(&id)
+                .unwrap()
+                .pipe(|vp| vp.paint_this_frame.take())
+            else {
+                // This viewport is not re-rendered this frame.
+                continue;
+            };
 
-        // TODO: Show all viewports.
+            // Wait for tesselation result synchronously.
+            let Ok(primitives) = rx_primitives.recv_timeout(Duration::from_secs(5)) else {
+                godot_warn!(
+                    "Tesselation result for viewport {id:?} is not received within 5 seconds"
+                );
+                continue;
+            };
 
-        // TODO: Paint all viewports
+            paint.painter.bind_mut().draw(&self.textures, primitives);
+        }
 
-        // TODO: Handle disposed textures from output.
+        // Handle disposed textures from output.
+        for id in textures_freed {
+            self.textures.free_texture(id);
+        }
 
-        // Then it's ready to start next frame.
+        // Finish this frame.
         self.share.join_frame_fence();
+    }
+
+    fn free_painter(x: Option<PainterContext>) {
+        if let Some(mut x) = x {
+            x.painter.queue_free();
+
+            if let Some(mut x) = x.window {
+                x.queue_free();
+            }
+        }
     }
 
     fn viewport_validate(
@@ -539,15 +616,7 @@ impl EguiBridge {
         build_with_parent: Option<(ViewportId, ViewportBuilder)>,
     ) {
         // Checkout painter
-        let mut painter = with_drop(self.painters.lock().remove(&id), |x| {
-            if let Some(mut x) = x {
-                x.painter.queue_free();
-
-                if let Some(mut x) = x.window {
-                    x.queue_free();
-                }
-            }
-        });
+        let mut painter = with_drop(self.painters.lock().remove(&id), Self::free_painter);
 
         // Check if this is from spawned viewports
         let spawned_dispose = self
@@ -586,6 +655,14 @@ impl EguiBridge {
             hash_map::Entry::Vacant(entry) => {
                 should_rebuild = true;
 
+                godot_print!(
+                    "spawning new EGUI viewport: {id:?} / {}",
+                    build_with_parent
+                        .as_ref()
+                        .map(|x| x.1.title.as_deref().unwrap_or("<unnamed>"))
+                        .unwrap_or("ROOT")
+                );
+
                 // Just throw away this ... it'll be replaced by new one.
                 let (_tx_update, rx_update) = mpsc::channel();
                 let mut init = ViewportBuilder::default();
@@ -596,7 +673,6 @@ impl EguiBridge {
 
                 entry.insert(ViewportContext {
                     repaint_at: Some(Instant::now()),
-                    repaint_with: None,
                     dispose: spawned_dispose,
                     rx_update,
                     builder: init,
@@ -894,10 +970,6 @@ impl EguiBridge {
 
         // Accumulate outputs to primary output.
         self.share.full_output.lock().append(output);
-    }
-
-    fn paint_viewport(&mut self, id: ViewportId) {
-        // TODO: From tesselation result, draw painter node.
     }
 
     /// Start frame in thread-safe manner.
