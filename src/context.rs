@@ -888,26 +888,37 @@ impl EguiBridge {
         }
 
         // Update viewport input from painter output.
-        if let Some(wnd) = painter.window.clone() {
+        'wnd: {
+            let gd_wnd = match painter.window.clone() {
+                Some(wnd) => wnd,
+                None => {
+                    if let Some(wnd) = painter.painter.get_window() {
+                        wnd
+                    } else {
+                        break 'wnd;
+                    }
+                }
+            };
+
             let info = &mut viewport.info;
 
             let inner_pos =
-                Vector2::from_vector2i(wnd.get_position()) + painter.painter.get_position();
+                Vector2::from_vector2i(gd_wnd.get_position()) + painter.painter.get_position();
             let inner_size = painter.painter.get_size();
 
             let gd_ds = DisplayServer::singleton();
             let id_screen = gd_ds
                 .window_get_current_screen_ex()
-                .window_id(wnd.get_window_id())
+                .window_id(gd_wnd.get_window_id())
                 .done();
             let scale = gd_ds.screen_get_scale_ex().screen(id_screen).done();
 
             info.inner_rect = Some(Rect2::new(inner_pos, inner_size).to_counterpart());
-            info.focused = Some(wnd.has_focus());
+            info.focused = Some(gd_wnd.has_focus());
             info.native_pixels_per_point = Some(scale);
-            info.fullscreen = Some(wnd.get_mode() == window::Mode::FULLSCREEN);
-            info.minimized = Some(wnd.get_mode() == window::Mode::MINIMIZED);
-            info.maximized = Some(wnd.get_mode() == window::Mode::MAXIMIZED);
+            info.fullscreen = Some(gd_wnd.get_mode() == window::Mode::FULLSCREEN);
+            info.minimized = Some(gd_wnd.get_mode() == window::Mode::MINIMIZED);
+            info.maximized = Some(gd_wnd.get_mode() == window::Mode::MAXIMIZED);
             info.monitor_size = Some(
                 gd_ds
                     .screen_get_size_ex()
@@ -916,11 +927,10 @@ impl EguiBridge {
                     .to_counterpart(),
             );
             info.outer_rect = Some(egui::Rect::from_min_size(
-                wnd.get_position().to_alternative(),
-                wnd.get_size().to_counterpart(),
+                gd_wnd.get_position().to_alternative(),
+                gd_wnd.get_size().to_counterpart(),
             ));
         }
-
         // Just validate viewport information on input
         let input = viewport.info.clone();
 
@@ -1024,6 +1034,7 @@ impl SharedContext {
             true
         } else {
             // Current frame is not yet started.
+            false
         }
     }
 
