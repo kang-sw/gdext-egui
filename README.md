@@ -17,18 +17,21 @@ Start Godot 4.2.1 at [`example/`](example/) directory, giving first argument [`S
 
 # Features
 
-- [ ] Window support
-  - [ ] Basic Viewport
-  - [ ] Viewport Close Signal
-  - [ ] Text Input / IME support
-- [ ] Rendering
-- [ ] Mouse input handling
-  - [ ] Basics
+- [x] Window support
+  - [x] Basic Viewport
+    - [x] Creation / Disposal
+    - [x] Mouse Input Handling
+    - [ ] Text Input / IME support
+  - [x] Viewport Close Signal
   - [ ] Drag-n-Drop
     - [ ] <-> Godot
     - [ ] <-> OS
-- [ ] Keyboard input handling
+- [x] Rendering
 - [ ] Utilities
   - [ ] Call from GdScript
   - [ ] Property display (for editor integration)
+
+# Known Issues
+
+Currently `ctrl + x` key sequence doesn't work...
 

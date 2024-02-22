@@ -5,7 +5,7 @@ use godot::{
         control::FocusMode,
         global::{self, KeyModifierMask},
         notify::ControlNotification,
-        Control, IControl, ImageTexture, InputEventKey, InputEventMouseButton,
+        Control, DisplayServer, IControl, ImageTexture, InputEventKey, InputEventMouseButton,
         InputEventMouseMotion, RenderingServer,
     },
     prelude::*,
@@ -168,7 +168,7 @@ impl IControl for EguiViewportBridge {
 
     fn input(&mut self, event: Gd<engine::InputEvent>) {
         let gd_self = self.to_gd();
-        let consume = move || {
+        let consume_input_event = move || {
             //    gd_self.accept_event();  // Changed to use `input`
 
             if let Some(mut vp) = gd_self.get_viewport() {
@@ -186,7 +186,7 @@ impl IControl for EguiViewportBridge {
                 ));
 
                 if ctx.wants_pointer_input() {
-                    consume();
+                    consume_input_event();
                 }
 
                 return;
@@ -263,7 +263,7 @@ impl IControl for EguiViewportBridge {
                 self.on_event(event);
 
                 if ctx.wants_pointer_input() {
-                    consume();
+                    consume_input_event();
                 }
 
                 return;
@@ -274,6 +274,29 @@ impl IControl for EguiViewportBridge {
             Err(event) => event,
             Ok(event) => {
                 let key = event.get_keycode();
+                let modifiers = dbg!(modifier_to_egui(event.get_modifiers_mask()));
+
+                // Handle copy / cut / paste ...
+                if modifiers.matches_logically(egui::Modifiers::CTRL) {
+                    let event = match key {
+                        global::Key::C => Some(egui::Event::Copy),
+                        global::Key::X => Some(egui::Event::Cut),
+                        global::Key::V => Some(egui::Event::Paste(
+                            DisplayServer::singleton().clipboard_get().into(),
+                        )),
+                        _ => None,
+                    };
+
+                    if let Some(event) = event {
+                        self.on_event(event);
+
+                        if ctx.wants_keyboard_input() {
+                            consume_input_event();
+                        }
+
+                        return;
+                    }
+                }
 
                 // @See
                 // https://github.com/godotengine/godot/blob/16d61427cab3a8e43f0a9a8ee724fc176b6433c6/scene/gui/text_edit.cpp#L2267
@@ -288,18 +311,18 @@ impl IControl for EguiViewportBridge {
 
                 let event = key_to_egui(key).map(|key| egui::Event::Key {
                     key,
-                    physical_key: key_to_egui(event.get_keycode()),
+                    physical_key: key_to_egui(dbg!(event.get_keycode())),
                     pressed: event.is_pressed(),
                     repeat: event.is_echo(),
-                    modifiers: modifier_to_egui(event.get_modifiers_mask()),
+                    modifiers,
                 });
 
-                if let Some(event) = event {
+                if let Some(event) = dbg!(event) {
                     self.on_event(event);
                 }
 
                 if ctx.wants_keyboard_input() {
-                    consume();
+                    consume_input_event();
                 }
 
                 return;
@@ -427,8 +450,8 @@ fn modifier_to_egui(modifier: KeyModifierMask) -> egui::Modifiers {
     let has = |x: KeyModifierMask| modifier.ord() & x.ord() != 0;
 
     out.shift = has(KeyModifierMask::SHIFT);
-    out.ctrl = has(KeyModifierMask::CTRL);
-    out.command = has(KeyModifierMask::CMD_OR_CTRL);
+    out.ctrl = has(KeyModifierMask::CTRL | KeyModifierMask::CMD_OR_CTRL);
+    out.command = has(KeyModifierMask::CTRL | KeyModifierMask::CMD_OR_CTRL);
     out.mac_cmd = has(KeyModifierMask::CMD_OR_CTRL);
     out.alt = has(KeyModifierMask::ALT);
 

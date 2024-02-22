@@ -416,8 +416,21 @@ impl EguiBridge {
                 // XXX: 256~ 65536 texture size limitation => is this practical?
                 inp.max_texture_side = Some(1 << (self.max_texture_bits as usize).clamp(8, 16));
 
-                // TODO: retrieve modifiers
-                inp.modifiers = Default::default();
+                // FIXME: Applying modifier doesn't work as expected
+                inp.modifiers = {
+                    use engine::global::Key as GdKey;
+
+                    let gd_input = engine::Input::singleton();
+                    let is_pressed = |k: GdKey| gd_input.is_key_pressed(k);
+
+                    egui::Modifiers {
+                        alt: is_pressed(GdKey::ALT),
+                        ctrl: is_pressed(GdKey::CTRL),
+                        shift: is_pressed(GdKey::SHIFT),
+                        command: is_pressed(GdKey::CTRL),
+                        mac_cmd: is_pressed(GdKey::META),
+                    }
+                };
             });
 
         // Start root frame as normal.
@@ -577,7 +590,7 @@ impl EguiBridge {
 
         // Cleanup full_output for next frame.
         let egui::FullOutput {
-            platform_output,
+            platform_output: _,
             textures_delta:
                 egui::TexturesDelta {
                     set: textures_created,
@@ -589,38 +602,6 @@ impl EguiBridge {
         } = take(&mut *self.share.full_output.lock());
 
         debug_assert!(shapes.is_empty(), "logic error - shape is viewport-wise");
-
-        // Handle platform outputs accumulated from all viewports.
-        {
-            let egui::PlatformOutput {
-                open_url,
-                copied_text,
-                events,
-                mutable_text_under_cursor,
-
-                // Handled by each viewport.
-                cursor_icon: _,
-                ime: _,
-            } = platform_output;
-
-            let mut ds = DisplayServer::singleton();
-
-            if let Some(url) = open_url {
-                open::that(url.url).ok();
-            }
-
-            if !copied_text.is_empty() {
-                ds.clipboard_set(copied_text.into());
-            }
-
-            if mutable_text_under_cursor {
-                // XXX: Do we need virtual board ...?
-            }
-
-            for _event in events {
-                // We're not interested in widget outputs
-            }
-        }
 
         // Handle new textures from output.
         for (id, delta) in textures_created {
@@ -1112,48 +1093,80 @@ impl EguiBridge {
             gd_wnd.set_ime_active(false);
         }
 
-        if output.platform_output.cursor_icon != egui::CursorIcon::None {
-            type CS = CursorShape;
+        // Handle platform outputs accumulated from all viewports.
+        {
+            let egui::PlatformOutput {
+                open_url,
+                copied_text,
+                events,
+                mutable_text_under_cursor,
+
+                // Handled by each viewport.
+                cursor_icon: _,
+                ime: _,
+            } = take(&mut output.platform_output);
+
             let mut ds = DisplayServer::singleton();
 
-            ds.cursor_set_shape(match output.platform_output.cursor_icon {
-                egui::CursorIcon::Default => CS::ARROW,
-                // egui::CursorIcon::None =>
-                // egui::CursorIcon::ContextMenu => CursorShape::meu,
-                egui::CursorIcon::Help => CS::HELP,
-                egui::CursorIcon::PointingHand => CS::POINTING_HAND,
-                // egui::CursorIcon::Progress =>
-                egui::CursorIcon::Wait => CS::WAIT,
-                // egui::CursorIcon::Cell =>
-                egui::CursorIcon::Crosshair => CS::CROSS,
-                egui::CursorIcon::Text => CS::IBEAM,
-                egui::CursorIcon::VerticalText => CS::IBEAM,
-                // egui::CursorIcon::Alias => CS::,
-                // egui::CursorIcon::Copy =>
-                // egui::CursorIcon::Move =>
-                // egui::CursorIcon::NoDrop =>
-                egui::CursorIcon::NotAllowed => CS::FORBIDDEN,
-                // egui::CursorIcon::Grab => ,
-                // egui::CursorIcon::Grabbing =>
-                egui::CursorIcon::AllScroll => CS::MOVE,
-                egui::CursorIcon::ResizeHorizontal => CS::HSIZE,
-                egui::CursorIcon::ResizeNeSw => CS::BDIAGSIZE,
-                egui::CursorIcon::ResizeNwSe => CS::FDIAGSIZE,
-                egui::CursorIcon::ResizeVertical => CS::VSIZE,
-                egui::CursorIcon::ResizeEast => CS::HSIZE,
-                egui::CursorIcon::ResizeSouthEast => CS::FDIAGSIZE,
-                egui::CursorIcon::ResizeSouth => CS::VSIZE,
-                egui::CursorIcon::ResizeSouthWest => CS::BDIAGSIZE,
-                egui::CursorIcon::ResizeWest => CS::HSIZE,
-                egui::CursorIcon::ResizeNorthWest => CS::FDIAGSIZE,
-                egui::CursorIcon::ResizeNorth => CS::VSIZE,
-                egui::CursorIcon::ResizeNorthEast => CS::BDIAGSIZE,
-                egui::CursorIcon::ResizeColumn => CS::HSIZE,
-                egui::CursorIcon::ResizeRow => CS::VSIZE,
-                // egui::CursorIcon::ZoomIn =>
-                // egui::CursorIcon::ZoomOut =>
-                _cursor => CS::ARROW,
-            });
+            if let Some(url) = open_url {
+                open::that(url.url).ok();
+            }
+
+            if !copied_text.is_empty() {
+                ds.clipboard_set(copied_text.into());
+            }
+
+            if mutable_text_under_cursor {
+                // XXX: Do we need virtual board ...?
+            }
+
+            for _event in events {
+                // We're not interested in widget outputs
+            }
+
+            if output.platform_output.cursor_icon != egui::CursorIcon::None {
+                type CS = CursorShape;
+                let mut ds = DisplayServer::singleton();
+
+                ds.cursor_set_shape(match output.platform_output.cursor_icon {
+                    egui::CursorIcon::Default => CS::ARROW,
+                    // egui::CursorIcon::None =>
+                    // egui::CursorIcon::ContextMenu => CursorShape::meu,
+                    egui::CursorIcon::Help => CS::HELP,
+                    egui::CursorIcon::PointingHand => CS::POINTING_HAND,
+                    // egui::CursorIcon::Progress =>
+                    egui::CursorIcon::Wait => CS::WAIT,
+                    // egui::CursorIcon::Cell =>
+                    egui::CursorIcon::Crosshair => CS::CROSS,
+                    egui::CursorIcon::Text => CS::IBEAM,
+                    egui::CursorIcon::VerticalText => CS::IBEAM,
+                    // egui::CursorIcon::Alias => CS::,
+                    // egui::CursorIcon::Copy =>
+                    // egui::CursorIcon::Move =>
+                    // egui::CursorIcon::NoDrop =>
+                    egui::CursorIcon::NotAllowed => CS::FORBIDDEN,
+                    // egui::CursorIcon::Grab => ,
+                    // egui::CursorIcon::Grabbing =>
+                    egui::CursorIcon::AllScroll => CS::MOVE,
+                    egui::CursorIcon::ResizeHorizontal => CS::HSIZE,
+                    egui::CursorIcon::ResizeNeSw => CS::BDIAGSIZE,
+                    egui::CursorIcon::ResizeNwSe => CS::FDIAGSIZE,
+                    egui::CursorIcon::ResizeVertical => CS::VSIZE,
+                    egui::CursorIcon::ResizeEast => CS::HSIZE,
+                    egui::CursorIcon::ResizeSouthEast => CS::FDIAGSIZE,
+                    egui::CursorIcon::ResizeSouth => CS::VSIZE,
+                    egui::CursorIcon::ResizeSouthWest => CS::BDIAGSIZE,
+                    egui::CursorIcon::ResizeWest => CS::HSIZE,
+                    egui::CursorIcon::ResizeNorthWest => CS::FDIAGSIZE,
+                    egui::CursorIcon::ResizeNorth => CS::VSIZE,
+                    egui::CursorIcon::ResizeNorthEast => CS::BDIAGSIZE,
+                    egui::CursorIcon::ResizeColumn => CS::HSIZE,
+                    egui::CursorIcon::ResizeRow => CS::VSIZE,
+                    // egui::CursorIcon::ZoomIn =>
+                    // egui::CursorIcon::ZoomOut =>
+                    _cursor => CS::ARROW,
+                });
+            }
         }
 
         // Accumulate outputs to primary output.
