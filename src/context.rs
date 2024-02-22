@@ -59,7 +59,7 @@ pub struct EguiBridge {
     surfaces: RefCell<ViewportIdMap<SurfaceContext>>,
 
     /// Setup scripts that was deferred until next frame end.
-    setup_scripts: RefCell<Vec<Box<dyn FnOnce(&egui::Context) + 'static>>>,
+    setup_scripts: RefCell<Vec<Box<FnDeferredContextAccess>>>,
 }
 
 #[derive(Clone)]
@@ -160,6 +160,15 @@ const VIEWPORT_CLOSE_REQUESTED: u8 = 1;
 const VIEWPORT_CLOSE_PENDING: u8 = 2;
 const VIEWPORT_CLOSE_CLOSE: u8 = 3;
 
+/// Callback for build spawned widget's window config.
+type FnBuildWindow = dyn Fn(&mut bool) -> egui::Window + 'static + Send;
+
+/// Callback for showing spawned widget.
+type FnShowWidget = dyn Fn(&egui::Ui) + 'static + Send;
+
+/// Callback for deferred context access, for non-rendering purposes.
+type FnDeferredContextAccess = dyn FnOnce(&egui::Context) + 'static;
+
 /* ------------------------------------------ Godot Api ----------------------------------------- */
 
 #[godot_api]
@@ -184,9 +193,6 @@ impl EguiBridge {
 }
 
 /* ------------------------------------- Context Management ------------------------------------- */
-
-type FnBuildWindow = dyn Fn(&mut bool) -> egui::Window + 'static + Send;
-type FnShowWidget = dyn Fn(&egui::Ui) + 'static + Send;
 
 /// APIs for spawning viewports.
 ///
