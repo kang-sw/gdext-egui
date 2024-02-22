@@ -49,6 +49,8 @@ pub struct EguiBridge {
     /// Texture storage
     textures: painter::TextureLibrary,
 
+    /// Pending intra-frame access methods
+
     /// Actual Godot Nodes for realization of viewports.
     ///
     /// # NOTE
@@ -158,19 +160,36 @@ impl EguiBridge {
 
 /* ------------------------------------- Context Management ------------------------------------- */
 
-type FnBuildWindow = dyn 'static + Send + for<'a> Fn(&'a mut bool) -> egui::Window;
-type FnShowWidget = dyn 'static + Send + Fn(&egui::Ui);
+type FnBuildWindow = dyn Fn(&mut bool) -> egui::Window + 'static + Send;
+type FnShowWidget = dyn Fn(&egui::Ui) + 'static + Send;
 
 /// APIs for spawning viewports.
 ///
 /// Key for every APIs are that any access to [`egui::Context`] triggers
 impl EguiBridge {
-    /// Start a new frame, and return context which you can draw with.
+    /// Access to egui context at intra-frame. This will be called immediately if we're
+    /// already out of frame boundary(e.g. start..end), otherwise, queue it to be called
+    /// later.
+    pub fn context_intra_frame(&self, setter: impl FnOnce(&egui::Context) + 'static + Send) {
+        if self.share.is_in_frame() {
+            // TODO: Defer setup script
+        } else {
+            setter(&self.share.egui);
+        }
+    }
+
+    /// Start a new frame (if required), and return context which you can draw with.
     ///
     /// This is very default way of using EGUI, and anything you draw upon this will be
     /// shown below the spawned root canvas; [`EguiBridge`]
     ///
     /// Use this when you want to draw widget every frame within `process()` function.
+    ///
+    /// # Caveats
+    ///
+    /// - Cloning `egui::Context` and access it directly out of provided lifecycle is not
+    ///   recommneded. Please guarantee that you only access this context within main
+    ///   thread, right after calling `current_frame`.
     ///
     /// # Panics
     ///
@@ -316,22 +335,22 @@ impl EguiBridge {
             return;
         }
 
-        let Some(mut tree) = self.base().get_tree() else {
+        let Some(mut timer) = self
+            .base()
+            .get_tree()
+            .and_then(|mut t| t.create_timer(0.01))
+        else {
             godot_script_error!("Node is not added in tree!");
             return;
         };
 
-        let Some(mut timer) = tree.create_timer(0.001) else {
-            godot_error!("Failed to create timer");
-            return;
-        };
-
         // End of this frame, `finish_frame` will
+
         timer.connect(
             "timeout".into(),
             Callable::from_object_method(
                 &self.to_gd(),
-                string_name!(Self, __internal_finish_frame_inner),
+                symbol_string!(Self, __internal_finish_frame_inner),
             ),
         );
 
@@ -398,66 +417,64 @@ impl EguiBridge {
         //
         // We temporarily take out of all widgets from array, to ensure no deadlock
         // would occur!
-        take(&mut *share.spawned_widgets.lock())
-            .tap_mut(|widgets| {
-                widgets.retain_mut(|w| {
-                    let mut keep_open = true;
-                    let wnd = (w.build_window)(&mut keep_open);
-                    let resp = wnd.show(&share.egui, |ui| (w.show)(ui));
+        let widgets = take(&mut *share.spawned_widgets.lock()).tap_mut(|widgets| {
+            widgets.retain_mut(|w| {
+                let mut keep_open = true;
+                let wnd = (w.build_window)(&mut keep_open);
+                let resp = wnd.show(&share.egui, |ui| (w.show)(ui));
 
-                    let Some(resp) = resp else {
-                        // Widget is closed.
-                        return false;
-                    };
+                let Some(resp) = resp else {
+                    // Widget is closed.
+                    return false;
+                };
 
-                    if resp.response.gained_focus() || resp.response.clicked() {
-                        // 2024-02-22 08:02:10. Check if changing drawing order
-                        // meaningful.
-                        // - Seems handled by egui?
-                        // - 2024-02-22 08:02:15. Turns out within single viewport, window
-                        //   ordering is automatically handled by EGUI. Therefore we don't
-                        //   need any specific reordering here.
-                    }
+                if resp.response.gained_focus() || resp.response.clicked() {
+                    // 2024-02-22 08:02:10. Check if changing drawing order
+                    // meaningful.
+                    // - Seems handled by egui?
+                    // - 2024-02-22 08:02:15. Turns out within single viewport, window
+                    //   ordering is automatically handled by EGUI. Therefore we don't
+                    //   need any specific reordering here.
+                }
 
-                    true
-                })
+                true
             })
-            .pipe(|mut widgets| {
-                // Not put it back to original array.
-                let mut lock = share.spawned_widgets.lock();
+        });
 
-                // Prevent allocation when possible.
-                widgets.extend(lock.drain(..));
-                *lock = widgets;
-            });
+        widgets.pipe(|mut widgets| {
+            // Not put it back to original array.
+            let mut lock = share.spawned_widgets.lock();
+
+            // Prevent allocation when possible.
+            widgets.extend(lock.drain(..));
+            *lock = widgets;
+        });
 
         // Deal with spawned viewports; in same manner.
-        take(&mut *share.spawned_viewports.lock())
-            .tap_mut(|viewports| {
-                viewports.retain(|id, value| {
-                    if value.dispose.load(Relaxed) {
-                        false
-                    } else {
-                        let ui_cb = value.repaint.clone();
-                        share.egui.show_viewport_deferred(
-                            *id,
-                            value.builder.clone(),
-                            move |ctx, _| {
-                                ui_cb(ctx);
-                            },
-                        );
+        let viewports = take(&mut *share.spawned_viewports.lock()).tap_mut(|viewports| {
+            viewports.retain(|id, value| {
+                if value.dispose.load(Relaxed) {
+                    false
+                } else {
+                    let ui_cb = value.repaint.clone();
+                    share
+                        .egui
+                        .show_viewport_deferred(*id, value.builder.clone(), move |ctx, _| {
+                            ui_cb(ctx);
+                        });
 
-                        true
-                    }
-                });
-            })
-            .pipe(|mut viewports| {
-                let mut lock = share.spawned_viewports.lock();
-
-                // Overwrite previous viewports with newly spawned ones, if exist.
-                viewports.extend(lock.drain());
-                *lock = viewports;
+                    true
+                }
             });
+        });
+
+        viewports.pipe(|mut viewports| {
+            let mut lock = share.spawned_viewports.lock();
+
+            // Overwrite previous viewports with newly spawned ones, if exist.
+            viewports.extend(lock.drain());
+            *lock = viewports;
+        });
 
         // End main frame loop.
         self.viewport_end_frame(egui::ViewportId::ROOT);
@@ -983,8 +1000,10 @@ impl EguiBridge {
             return;
         }
 
-        self.to_gd()
-            .call_deferred(string_name!(Self, __internal_try_start_frame_inner), &[]);
+        self.to_gd().call_deferred(
+            symbol_string!(Self, __internal_try_start_frame_inner).into(),
+            &[],
+        );
     }
 }
 
@@ -1005,8 +1024,12 @@ impl SharedContext {
             true
         } else {
             // Current frame is not yet started.
-            false
         }
+    }
+
+    fn is_in_frame(&self) -> bool {
+        let (ref current, ref requested) = *self.fence_frame.lock();
+        *current == *requested
     }
 
     fn join_frame_fence(&self) {
