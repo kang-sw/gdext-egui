@@ -74,7 +74,7 @@ struct SharedContext {
     egui: egui::Context,
 
     /// Detects whether to start new frame.
-    fence_frame: Arc<Mutex<(u64, u64)>>,
+    frame_started: AtomicBool,
 
     /// Template input for each viewport rendering.
     raw_input_template: Mutex<egui::RawInput>,
@@ -143,6 +143,12 @@ impl ICanvasLayer for EguiBridge {
     fn ready(&mut self) {
         self.setup_egui()
     }
+
+    fn process(&mut self, _dt: f64) {
+        if self.share.is_in_frame() {
+            self.finish_frame();
+        }
+    }
 }
 
 #[godot_api]
@@ -150,11 +156,6 @@ impl EguiBridge {
     #[func]
     fn __internal_try_start_frame_inner(&self) {
         self.try_start_frame();
-    }
-
-    #[func]
-    fn __internal_finish_frame_inner(&mut self) {
-        self.finish_frame();
     }
 }
 
@@ -331,28 +332,9 @@ impl EguiBridge {
         assert!(std::thread::current().id() == self.share.main_thread_id);
 
         // Only perform frame start when necessary.
-        if !self.share.try_advance_frame_fence() {
+        if !self.share.try_advance_frame() {
             return;
         }
-
-        let Some(mut timer) = self
-            .base()
-            .get_tree()
-            .and_then(|mut t| t.create_timer(0.01))
-        else {
-            godot_script_error!("Node is not added in tree!");
-            return;
-        };
-
-        // End of this frame, `finish_frame` will
-
-        timer.connect(
-            "timeout".into(),
-            Callable::from_object_method(
-                &self.to_gd(),
-                symbol_string!(Self, __internal_finish_frame_inner),
-            ),
-        );
 
         // Register immediate renderer for this frame.
         let w_self = utilities::weakref(self.to_gd().to_variant());
@@ -610,7 +592,7 @@ impl EguiBridge {
         }
 
         // Finish this frame.
-        self.share.join_frame_fence();
+        self.share.finish_frame();
     }
 
     fn free_painter(x: Option<PainterContext>) {
@@ -1006,7 +988,7 @@ impl EguiBridge {
             return;
         }
 
-        if !self.share.try_advance_frame_fence() {
+        if !self.share.try_advance_frame() {
             return;
         }
 
@@ -1026,25 +1008,15 @@ impl SharedContext {
         };
     }
 
-    fn try_advance_frame_fence(&self) -> bool {
-        let (ref mut current, ref mut requested) = *self.fence_frame.lock();
-
-        if *current == *requested {
-            *requested += 1;
-            true
-        } else {
-            // Current frame is not yet started.
-            false
-        }
+    fn try_advance_frame(&self) -> bool {
+        !self.frame_started.swap(true, Relaxed)
     }
 
     fn is_in_frame(&self) -> bool {
-        let (ref current, ref requested) = *self.fence_frame.lock();
-        *current == *requested
+        self.frame_started.load(Relaxed)
     }
 
-    fn join_frame_fence(&self) {
-        let (ref mut current, ref mut requested) = *self.fence_frame.lock();
-        *requested = *current;
+    fn finish_frame(&self) {
+        self.frame_started.store(false, Relaxed);
     }
 }
