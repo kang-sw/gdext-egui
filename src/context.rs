@@ -662,8 +662,26 @@ impl EguiBridge {
                 let (_tx_update, rx_update) = mpsc::channel();
                 let mut init = ViewportBuilder::default();
 
+                // Derive some defaults from parent window
+                let gd_wnd_parent = build_with_parent
+                    .as_ref()
+                    .map(|x| x.0)
+                    .and_then(|id| self.surfaces.lock().get(&id).and_then(|x| x.window.clone()))
+                    .unwrap_or_else(|| self.base().get_window().expect("not added in tree!"));
+
                 let (updates, _) = build_with_parent
-                    .map(|x| init.patch(x.1))
+                    .map(|x| {
+                        init.patch(x.1.tap_mut(|init| {
+                            if init.position.is_none() {
+                                let pos = gd_wnd_parent.get_position().to_alternative();
+                                init.position = Some(pos + egui::vec2(25., 25.));
+                            }
+
+                            if init.inner_size.is_none() {
+                                init.inner_size = Some(egui::vec2(272., 480.));
+                            }
+                        }))
+                    })
                     .unwrap_or_default();
 
                 entry.insert(ViewportContext {
