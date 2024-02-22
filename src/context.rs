@@ -59,7 +59,7 @@ pub struct EguiBridge {
     setup_scripts: RefCell<Vec<Box<FnDeferredContextAccess>>>,
 
     /// Determines the cursor shape of this frame.
-    cursor_shape: Option<egui::CursorIcon>,
+    cursor_shape: RefCell<Option<egui::CursorIcon>>,
 }
 
 #[derive(Clone)]
@@ -201,7 +201,7 @@ impl EguiBridge {
     /// Access to egui context at intra-frame. This will be called immediately if we're
     /// already out of frame boundary(e.g. start..end), otherwise, queue it to be called
     /// later.
-    pub fn context_intra_frame(&self, setter: impl FnOnce(&egui::Context) + 'static + Send) {
+    pub fn setup_context(&self, setter: impl FnOnce(&egui::Context) + 'static + Send) {
         if self.share.is_in_frame() {
             self.setup_scripts.borrow_mut().push(Box::new(setter));
         } else {
@@ -373,12 +373,12 @@ impl EguiBridge {
                 unreachable!();
             };
 
-            let Ok(mut this) = this.get_ref().try_to::<Gd<Self>>() else {
+            let Ok(this) = this.get_ref().try_to::<Gd<Self>>() else {
                 // It's just expired.
                 return;
             };
 
-            let mut this = this.bind_mut();
+            let this = this.bind();
 
             let p_src = this.share.egui.input(|x| x as *const _);
             let p_new = ctx.input(|x| x as *const _);
@@ -1098,7 +1098,7 @@ impl EguiBridge {
         self.share.egui.begin_frame(raw_input);
     }
 
-    fn viewport_end_frame(&mut self, id: ViewportId) {
+    fn viewport_end_frame(&self, id: ViewportId) {
         // Retrieve viewport-wise output.
         let mut output = self.share.egui.end_frame();
 
@@ -1168,7 +1168,7 @@ impl EguiBridge {
                 // We're not interested in widget outputs
             }
 
-            let overwrite_cursor = if self.cursor_shape.is_some() {
+            let overwrite_cursor = if self.cursor_shape.borrow().is_some() {
                 // Do not overwrite meaningful cursor with `None` or `Default`
                 !matches!(cursor_icon, CursorIcon::None | CursorIcon::Default)
             } else {
@@ -1177,7 +1177,7 @@ impl EguiBridge {
             };
 
             if overwrite_cursor {
-                self.cursor_shape = Some(cursor_icon);
+                *self.cursor_shape.borrow_mut() = Some(cursor_icon);
             }
         }
 

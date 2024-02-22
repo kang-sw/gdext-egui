@@ -33,7 +33,3 @@ Start Godot 4.2.1 at [`example/`](example/) directory, giving first argument [`S
 - [ ] Utilities
   - [ ] Expose GdScript API (Inherently, a class wrapper for frequently used methods)
   - [ ] Property display (for editor integration)
-
-# Known Issues
-
-- [ ] When tool mode, hot-reloading incurs editor crash on next `EguiBridge::process` call.
