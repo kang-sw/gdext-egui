@@ -2,7 +2,7 @@ use egui::ahash::HashMap;
 use godot::{
     engine::{
         self,
-        control::{FocusMode, LayoutPreset, MouseFilter},
+        control::{FocusMode, LayoutPreset},
         global::{self, KeyModifierMask},
         notify::ControlNotification,
         Control, DisplayServer, IControl, ImageTexture, InputEventKey, InputEventMouseButton,
@@ -152,20 +152,6 @@ impl IControl for EguiViewportBridge {
             // Makes node to fill the whole available space
             b.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
 
-            // NOTE:
-            //
-            // Godot's default `gui_input` handling method, does not propagate inputs into
-            // its siblings if they are obscured by this node. Since we're creating a
-            // control which covers entire drawable space, and intercepting all inputs, if
-            // mouse filter is applied anything other than `IGNORE` would effectively
-            // prevent all other non-parent node to receive any input.
-            //
-            // Therefore, we rather intercept any inputs in `_input()` method, and if we
-            // need to consume the input inside egui, we rather make call to
-            // `Viewport::set_input_as_handled()` which consumes input even before
-            // reaching out to `gui_input()` callbacks of any.
-            b.set_mouse_filter(MouseFilter::IGNORE);
-
             // Make this node to be focusable
             b.set_focus_mode(FocusMode::CLICK);
         });
@@ -191,6 +177,12 @@ impl IControl for EguiViewportBridge {
             self.mark_input_handled();
         }
     }
+
+    fn gui_input(&mut self, event: Gd<engine::InputEvent>) {
+        if self.try_consume_input(event) {
+            self.base_mut().accept_event();
+        }
+    }
 }
 
 impl EguiViewportBridge {
@@ -201,7 +193,7 @@ impl EguiViewportBridge {
     }
 
     fn mark_input_handled(&mut self) {
-        if let Some(mut vp) = self.to_gd().get_viewport() {
+        if let Some(mut vp) = self.base().get_viewport() {
             vp.set_input_as_handled();
         }
     }
@@ -302,7 +294,7 @@ impl EguiViewportBridge {
 
                 return if ctx.wants_pointer_input() {
                     // We grab focus only with clicks
-                    self.to_gd().grab_focus();
+                    self.base_mut().grab_focus();
                     true
                 } else {
                     false
@@ -314,7 +306,7 @@ impl EguiViewportBridge {
             Err(event) => event,
             Ok(event) => {
                 let key = event.get_keycode();
-                let modifiers = dbg!(modifier_to_egui(event.get_modifiers_mask()));
+                let modifiers = modifier_to_egui(event.get_modifiers_mask());
 
                 // Handle copy / cut / paste ...
                 if modifiers.matches_logically(egui::Modifiers::CTRL) {

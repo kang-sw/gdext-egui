@@ -8,7 +8,6 @@ use godot::{
     engine::{self, CanvasLayer, ICanvasLayer},
     prelude::*,
 };
-
 struct MyExtension;
 
 #[gdextension]
@@ -36,6 +35,26 @@ impl INode for Showcase {
         let mut gd_self = self.to_gd();
         gd_self.add_child(self.egui.clone().upcast());
         self.egui.set_owner(gd_self.upcast());
+
+        self.base()
+            .get_viewport()
+            .unwrap()
+            .set_embedding_subwindows(false);
+
+        self.egui.bind_mut().spawn_viewport(
+            ViewportId::from_hash_of(31),
+            ViewportBuilder::default().with_title("Demo Viewport"),
+            {
+                let mut demo = egui_demo_lib::ColorTest::default();
+                move |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        demo.ui(ui);
+                    });
+
+                    true
+                }
+            },
+        );
     }
 
     fn process(&mut self, _d: f64) {

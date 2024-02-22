@@ -16,7 +16,10 @@ use egui::{
     ViewportId, ViewportIdMap,
 };
 use godot::{
-    engine::{self, window, CanvasLayer, DisplayServer, ICanvasLayer, WeakRef},
+    engine::{
+        self, control::MouseFilter, window, CanvasLayer, DisplayServer, ICanvasLayer, InputEvent,
+        WeakRef,
+    },
     prelude::*,
 };
 use tap::prelude::{Pipe, Tap};
@@ -124,9 +127,6 @@ struct ViewportContext {
 
     /// Viewport initialization
     builder: egui::ViewportBuilder,
-
-    /// Dispose context, if this is spawned viewport.
-    dispose: Option<Arc<AtomicBool>>,
 
     /// Close request status
     close_request: Arc<ViewportClose>,
@@ -324,7 +324,7 @@ impl EguiBridge {
                 SpawnedViewportContext {
                     dispose: dispose.clone(),
                     repaint: Arc::new(move |ctx| {
-                        dispose.fetch_or(show_fn.lock()(ctx), Relaxed);
+                        dispose.fetch_or(!show_fn.lock()(ctx), Relaxed);
                     }),
                     builder,
                 },
@@ -333,6 +333,15 @@ impl EguiBridge {
 
         // Ensure the ui frame gets
         self.queue_try_start_frame();
+    }
+
+    /// For editor plugin only; forward any input occurred in viewport to EGUI. Returns
+    /// true when the EGUI consumed the input. This is only valid when you spawned EGUI
+    /// instance in editor main viewport!
+    pub fn forward_canvas_gui_input(&self, _event: Gd<InputEvent>) -> bool {
+        // TODO: Forward input to root viewport.
+
+        false
     }
 }
 
@@ -432,6 +441,14 @@ impl EguiBridge {
                     }
                 };
             });
+
+        // Before starting a frame, check if we can spawn separate windows for viewport.
+        self.share.egui.set_embed_viewports(
+            self.base()
+                .get_viewport()
+                .unwrap()
+                .is_embedding_subwindows(),
+        );
 
         // Start root frame as normal.
         self.viewport_validate(egui::ViewportId::ROOT, None);
@@ -574,13 +591,21 @@ impl EguiBridge {
 
         // Deal with removed viewports
         for id in remaining_viewports {
+            match share.spawned_viewports.lock().entry(id) {
+                hash_map::Entry::Occupied(entry) => {
+                    if !entry.get().dispose.load(Relaxed) {
+                        // The widget didn't agree to close, so we put it back to the list.
+                        continue;
+                    }
+
+                    // Spawned viewport also agreed to close.
+                    entry.remove();
+                }
+                hash_map::Entry::Vacant(_) => (),
+            }
+
             // Painter should be freed first, then viewport.
             Self::free_surface(self.surfaces.borrow_mut().remove(&id));
-
-            // Spawned viewports may never be removed as long as it is not disposed, since
-            // the main loop guarantees to keep it alive by calling `show_viewport_deferred`
-            // every frame.
-            debug_assert!(!share.spawned_viewports.lock().contains_key(&id));
 
             // Remove viewport from context. Assertion here since we've retrieved
             // remaining_viewports from viewport list itself, any 'subtractive'
@@ -783,7 +808,6 @@ impl EguiBridge {
 
                 entry.insert(ViewportContext {
                     repaint_at: Some(Instant::now()),
-                    dispose: spawned_dispose,
                     rx_update,
                     close_request: Default::default(),
                     builder: init,
@@ -821,9 +845,31 @@ impl EguiBridge {
                 self.to_gd().add_child(gd_painter.clone().upcast());
                 gd_painter.set_owner(self.to_gd().upcast());
 
+                // NOTE: For root viewport...
+                //
+                // Godot's default `gui_input` handling method, does not propagate inputs into
+                // its siblings if they are obscured by this node. Since we're creating a
+                // control which covers entire drawable space, and intercepting all inputs, if
+                // mouse filter is applied anything other than `IGNORE` would effectively
+                // prevent all other non-parent node to receive any input.
+                //
+                // Therefore, we rather intercept any inputs in `_input()` method, and if we
+                // need to consume the input inside egui, we rather make call to
+                // `Viewport::set_input_as_handled()` which consumes input even before
+                // reaching out to `gui_input()` callbacks of any.
+                gd_painter.set_mouse_filter(MouseFilter::IGNORE);
+
+                // To do the tricks
+                gd_painter.set_process_input(true);
+
                 None
             } else {
                 let builder = &viewport.builder;
+
+                // NOTE: For other viewports, they exclusively use the window, therefore
+                // don't need an `input` trick to work correctly.
+                gd_painter.set_mouse_filter(MouseFilter::PASS);
+                gd_painter.set_process_input(false);
 
                 // Spawn additional window to hold painter.
                 let mut gd_wnd = engine::Window::new_alloc();
@@ -848,7 +894,7 @@ impl EguiBridge {
                 // - active
                 // - app_id
                 // - close_button
-                // - minimize_button
+                // - minimwze_button
                 // - maximize_button
                 // - title_shown
                 // - titlebar_buttons_shown
@@ -892,20 +938,14 @@ impl EguiBridge {
                     if id == ViewportId::ROOT {
                         // Ignore close signal to root ... It's simply not allowed!
                         godot_warn!("Root viewport received close request!");
-                    } else if let Some(dispose) = &viewport.dispose {
-                        // Close the spawned window.
-                        dispose.store(true, Relaxed);
                     } else {
                         // In any other cases; close signal is ignored. User can easily
                         // dispose the viewport by not calling `show_viewport_deferred`
                     }
+
+                    viewport.close_request.store(VIEWPORT_CLOSE_CLOSE, Relaxed);
                 }
                 CancelClose => {
-                    if let Some(dispose) = &viewport.dispose {
-                        // Cancel the close signal.
-                        dispose.store(false, Relaxed);
-                    }
-
                     viewport.close_request.store(VIEWPORT_CLOSE_NONE, Relaxed);
                 }
                 Title(new_title) => {
