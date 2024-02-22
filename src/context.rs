@@ -385,6 +385,9 @@ impl EguiBridge {
 
                 // XXX: 256~ 65536 texture size limitation => is this practical?
                 inp.max_texture_side = Some(1 << (self.max_texture_bits as usize).clamp(8, 16));
+
+                // TODO: retrieve modifiers
+                inp.modifiers = Default::default();
             });
 
         // Start root frame as normal.
@@ -708,13 +711,16 @@ impl EguiBridge {
             gd_painter.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
 
             let ctx = self.share.egui.clone();
-            gd_painter.bind_mut().initiate(Box::new(move |ev| {
-                // NOTE: cloning egui context into this closure doesn't make cyclic reference
-                // - Both are field of `Self`, which does not refer to each other.
+            gd_painter.bind_mut().initiate(
+                ctx.clone(),
+                Box::new(move |ev| {
+                    // NOTE: cloning egui context into this closure doesn't make cyclic reference
+                    // - Both are field of `Self`, which does not refer to each other.
 
-                tx_viewport.send(ev).ok(); // Failing this is just okay.
-                ctx.request_repaint_of(id);
-            }));
+                    tx_viewport.send(ev).ok(); // Failing this is just okay.
+                    ctx.request_repaint_of(id);
+                }),
+            );
 
             // TODO: Bind `gd_painter.resized()`
 

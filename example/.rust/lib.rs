@@ -14,6 +14,9 @@ struct Showcase {
     /// This should be set from editor
     #[export]
     egui: Option<Gd<gdext_egui::EguiBridge>>,
+
+    text_1: String,
+    text_2: String,
 }
 
 #[godot_api]
@@ -45,7 +48,20 @@ impl INode2D for Showcase {
         egui::Window::new("Example Window").show(ctx, |ui| {
             ui.label("hello, world!");
             ui.label(format!("Now: {tick}"));
+            ui.text_edit_multiline(&mut self.text_1);
         });
+
+        ctx.show_viewport_immediate(
+            ViewportId::from_hash_of("Hah! This is immede"),
+            ViewportBuilder::default().with_title("Immeddde~~"),
+            move |ctx, _| {
+                egui::Window::new("Window in Viewport!").show(ctx, |ui| {
+                    ui.label("blah blah");
+                    ui.label(format!("Now: {tick}"));
+                    ui.text_edit_multiline(&mut self.text_2);
+                });
+            },
+        );
 
         ctx.show_viewport_deferred(
             ViewportId::from_hash_of("Hah!"),

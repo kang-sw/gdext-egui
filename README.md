@@ -17,9 +17,13 @@ Start Godot 4.2.1 at [`example/`](example/) directory, giving first argument [`S
 
 # Features
 
-- [ ] Viewport support
+- [ ] Window support
+  - [ ] Basic Viewport
+  - [ ] Viewport Close Signal
+  - [ ] Text Input / IME support
 - [ ] Rendering
 - [ ] Mouse input handling
+  - [ ] Basics
   - [ ] Drag-n-Drop
     - [ ] <-> Godot
     - [ ] <-> OS
