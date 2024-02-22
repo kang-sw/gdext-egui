@@ -16,12 +16,7 @@ use egui::{
     ViewportIdMap,
 };
 use godot::{
-    engine::{
-        self,
-        control::{LayoutPreset, MouseFilter},
-        display_server::CursorShape,
-        window, CanvasLayer, Control, DisplayServer, ICanvasLayer, IControl, WeakRef,
-    },
+    engine::{self, window, CanvasLayer, DisplayServer, ICanvasLayer, WeakRef},
     prelude::*,
 };
 use tap::prelude::{Pipe, Tap};
@@ -177,11 +172,6 @@ type FnDeferredContextAccess = dyn FnOnce(&egui::Context) + 'static;
 impl ICanvasLayer for EguiBridge {
     fn ready(&mut self) {
         self.setup_egui();
-
-        self.base_mut().tap_mut(|b| {
-            // b.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
-            // b.set_mouse_filter(MouseFilter::IGNORE);
-        });
     }
 
     fn process(&mut self, _dt: f64) {
@@ -1130,6 +1120,11 @@ impl EguiBridge {
                 // We're not interested in widget outputs
             }
 
+            // NOTE: Intentionally disabling cursor shape control
+            // 1. It doesn't work currently.
+            // 2. For game engine; which highly likely to use customized cursors,
+            //    overriding default cursor feels a bit wrong.
+            #[cfg(any())]
             if output.platform_output.cursor_icon != egui::CursorIcon::None {
                 type CS = CursorShape;
                 let mut ds = DisplayServer::singleton();

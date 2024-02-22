@@ -22,14 +22,16 @@ Start Godot 4.2.1 at [`example/`](example/) directory, giving first argument [`S
     - [x] Creation / Disposal
     - [x] Mouse Input Handling
     - [ ] Text Input / IME support
+  - [ ] "GUEST MODE" Viewports
+    - Spawn EGUI layer onto any existing window, other than root viewport.
   - [x] Viewport Close Signal
   - [ ] Drag-n-Drop
-    - [ ] <-> Godot
-    - [ ] <-> OS
+    - [ ] <-> Godot Editor
+    - [ ] <-> OS File System
 - [x] Rendering
   - [ ] Clipping
 - [ ] Utilities
-  - [ ] Call from GdScript
+  - [ ] Expose GdScript API (Inherently, a class wrapper for frequently used methods)
   - [ ] Property display (for editor integration)
 
 # Known Issues
