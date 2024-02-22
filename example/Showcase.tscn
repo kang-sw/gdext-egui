@@ -4,3 +4,16 @@
 egui = NodePath("GodotEguiBridge")
 
 [node name="GodotEguiBridge" type="GodotEguiBridge" parent="."]
+
+[node name="Button" type="Button" parent="."]
+offset_left = 118.0
+offset_top = 192.0
+offset_right = 388.0
+offset_bottom = 297.0
+text = "I AM BUTTON"
+
+[node name="TextEdit" type="TextEdit" parent="."]
+offset_left = 167.0
+offset_top = 72.0
+offset_right = 466.0
+offset_bottom = 144.0

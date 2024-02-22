@@ -4,7 +4,10 @@ use std::sync::{
 };
 
 use gdext_egui::{egui, ViewportBuilder, ViewportId};
-use godot::{engine, prelude::*};
+use godot::{
+    engine::{self, CanvasLayer, ICanvasLayer},
+    prelude::*,
+};
 
 struct MyExtension;
 
@@ -12,9 +15,9 @@ struct MyExtension;
 unsafe impl ExtensionLibrary for MyExtension {}
 
 #[derive(GodotClass)]
-#[class(init, base=Node2D)]
+#[class(init, base=CanvasLayer)]
 struct Showcase {
-    base: Base<Node2D>,
+    base: Base<CanvasLayer>,
 
     /// This should be set from editor
     #[export]
@@ -27,7 +30,7 @@ struct Showcase {
 }
 
 #[godot_api]
-impl INode2D for Showcase {
+impl ICanvasLayer for Showcase {
     fn ready(&mut self) {
         let Some(mut vp) = self.base_mut().get_viewport() else {
             godot_error!("Viewport not found");

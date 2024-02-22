@@ -170,133 +170,148 @@ impl IControl for EguiViewportBridge {
         }
     }
 
-    fn gui_input(&mut self, event: Gd<engine::InputEvent>) {
-        let Some(ctx) = &self.context else { return };
+    fn input(&mut self, event: Gd<engine::InputEvent>) {
+        let gd_self = self.to_gd();
+        let consume = move || {
+            //    gd_self.accept_event();  // Changed to use `input`
 
-        let accepted = 'accept: {
-            let event = match event.try_cast::<InputEventMouseMotion>() {
-                Err(event) => event,
-                Ok(event) => {
-                    self.on_event(egui::Event::PointerMoved(
-                        event.get_position().to_alternative(),
-                    ));
-                    break 'accept true;
-                }
-            };
-
-            let event = match event.try_cast::<InputEventMouseButton>() {
-                Err(event) => event,
-                Ok(event) => {
-                    if event.is_canceled() {
-                        break 'accept false;
-                    }
-
-                    let modifiers = modifier_to_egui(event.get_modifiers_mask());
-                    let button = event.get_button_index();
-                    let pos = event.get_position().to_alternative();
-
-                    enum Type {
-                        Btn(egui::PointerButton),
-                        Wheel { horizontal: bool, delta: f32 },
-                    }
-
-                    use Type::*;
-
-                    let factor = event.get_factor().tap_mut(|val| {
-                        if *val == 0.0 {
-                            *val = 4.0;
-                        }
-                    });
-
-                    let r = match button {
-                        global::MouseButton::LEFT => Btn(egui::PointerButton::Primary),
-                        global::MouseButton::RIGHT => Btn(egui::PointerButton::Secondary),
-                        global::MouseButton::MIDDLE => Btn(egui::PointerButton::Middle),
-                        global::MouseButton::XBUTTON1 => Btn(egui::PointerButton::Extra1),
-                        global::MouseButton::XBUTTON2 => Btn(egui::PointerButton::Extra2),
-
-                        global::MouseButton::WHEEL_DOWN => Wheel {
-                            horizontal: false,
-                            delta: factor,
-                        },
-                        global::MouseButton::WHEEL_UP => Wheel {
-                            horizontal: false,
-                            delta: -factor,
-                        },
-                        global::MouseButton::WHEEL_RIGHT => Wheel {
-                            horizontal: true,
-                            delta: factor,
-                        },
-                        global::MouseButton::WHEEL_LEFT => Wheel {
-                            horizontal: true,
-                            delta: -factor,
-                        },
-                        _ => break 'accept false,
-                    };
-
-                    let event = match r {
-                        Btn(button) => egui::Event::PointerButton {
-                            pos,
-                            button,
-                            pressed: event.is_pressed(),
-                            modifiers,
-                        },
-                        Wheel { horizontal, delta } => egui::Event::MouseWheel {
-                            unit: egui::MouseWheelUnit::Line,
-                            delta: egui::vec2(
-                                if horizontal { delta } else { 0.0 },
-                                if !horizontal { delta } else { 0.0 },
-                            ),
-                            modifiers,
-                        },
-                    };
-
-                    self.on_event(event);
-                    break 'accept true;
-                }
-            };
-
-            let event = match event.try_cast::<InputEventKey>() {
-                Err(event) => event,
-                Ok(event) => {
-                    let key = event.get_keycode();
-
-                    // @See
-                    // https://github.com/godotengine/godot/blob/16d61427cab3a8e43f0a9a8ee724fc176b6433c6/scene/gui/text_edit.cpp#L2267
-                    let unicode = event.get_unicode();
-
-                    if event.is_pressed() && unicode >= 32 {
-                        let ch = std::char::from_u32(unicode as u32).unwrap();
-                        self.on_event(egui::Event::Text(ch.to_string()));
-                    }
-
-                    // if key == global::Key::
-
-                    let event = key_to_egui(key).map(|key| egui::Event::Key {
-                        key,
-                        physical_key: key_to_egui(event.get_keycode()),
-                        pressed: event.is_pressed(),
-                        repeat: event.is_echo(),
-                        modifiers: modifier_to_egui(event.get_modifiers_mask()),
-                    });
-
-                    if let Some(event) = event {
-                        self.on_event(event);
-                    }
-
-                    break 'accept true;
-                }
-            };
-
-            // Every event filter exhausted
-            drop(event);
-
-            false
+            if let Some(mut vp) = gd_self.get_viewport() {
+                vp.set_input_as_handled();
+            }
         };
 
-        if accepted && (ctx.wants_pointer_input() || ctx.wants_keyboard_input()) {
-            self.base_mut().accept_event();
-        }
+        let Some(ctx) = &self.context else { return };
+
+        let event = match event.try_cast::<InputEventMouseMotion>() {
+            Err(event) => event,
+            Ok(event) => {
+                self.on_event(egui::Event::PointerMoved(
+                    event.get_position().to_alternative(),
+                ));
+
+                if ctx.wants_pointer_input() {
+                    consume();
+                }
+
+                return;
+            }
+        };
+
+        let event = match event.try_cast::<InputEventMouseButton>() {
+            Err(event) => event,
+            Ok(event) => {
+                if event.is_canceled() {
+                    return;
+                }
+
+                let modifiers = modifier_to_egui(event.get_modifiers_mask());
+                let button = event.get_button_index();
+                let pos = event.get_position().to_alternative();
+
+                enum Type {
+                    Btn(egui::PointerButton),
+                    Wheel { horizontal: bool, delta: f32 },
+                }
+
+                use Type::*;
+
+                let factor = event.get_factor().tap_mut(|val| {
+                    if *val == 0.0 {
+                        *val = 4.0;
+                    }
+                });
+
+                let r = match button {
+                    global::MouseButton::LEFT => Btn(egui::PointerButton::Primary),
+                    global::MouseButton::RIGHT => Btn(egui::PointerButton::Secondary),
+                    global::MouseButton::MIDDLE => Btn(egui::PointerButton::Middle),
+                    global::MouseButton::XBUTTON1 => Btn(egui::PointerButton::Extra1),
+                    global::MouseButton::XBUTTON2 => Btn(egui::PointerButton::Extra2),
+
+                    global::MouseButton::WHEEL_DOWN => Wheel {
+                        horizontal: false,
+                        delta: factor,
+                    },
+                    global::MouseButton::WHEEL_UP => Wheel {
+                        horizontal: false,
+                        delta: -factor,
+                    },
+                    global::MouseButton::WHEEL_RIGHT => Wheel {
+                        horizontal: true,
+                        delta: factor,
+                    },
+                    global::MouseButton::WHEEL_LEFT => Wheel {
+                        horizontal: true,
+                        delta: -factor,
+                    },
+                    _ => return,
+                };
+
+                let event = match r {
+                    Btn(button) => egui::Event::PointerButton {
+                        pos,
+                        button,
+                        pressed: event.is_pressed(),
+                        modifiers,
+                    },
+                    Wheel { horizontal, delta } => egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Line,
+                        delta: egui::vec2(
+                            if horizontal { delta } else { 0.0 },
+                            if !horizontal { delta } else { 0.0 },
+                        ),
+                        modifiers,
+                    },
+                };
+
+                self.on_event(event);
+
+                if ctx.wants_pointer_input() {
+                    consume();
+                }
+
+                return;
+            }
+        };
+
+        let event = match event.try_cast::<InputEventKey>() {
+            Err(event) => event,
+            Ok(event) => {
+                let key = event.get_keycode();
+
+                // @See
+                // https://github.com/godotengine/godot/blob/16d61427cab3a8e43f0a9a8ee724fc176b6433c6/scene/gui/text_edit.cpp#L2267
+                let unicode = event.get_unicode();
+
+                if event.is_pressed() && unicode >= 32 {
+                    let ch = std::char::from_u32(unicode as u32).unwrap();
+                    self.on_event(egui::Event::Text(ch.to_string()));
+                }
+
+                // if key == global::Key::
+
+                let event = key_to_egui(key).map(|key| egui::Event::Key {
+                    key,
+                    physical_key: key_to_egui(event.get_keycode()),
+                    pressed: event.is_pressed(),
+                    repeat: event.is_echo(),
+                    modifiers: modifier_to_egui(event.get_modifiers_mask()),
+                });
+
+                if let Some(event) = event {
+                    self.on_event(event);
+                }
+
+                if ctx.wants_keyboard_input() {
+                    consume();
+                }
+
+                return;
+            }
+        };
+
+        // Every event catch was exhausted. Simply ignore it!
+        let _ = event;
     }
 }
 
@@ -327,7 +342,7 @@ impl EguiViewportBridge {
 
                     gd_rs.canvas_item_set_parent(rid, rid_self_canvas);
                     gd_rs.canvas_item_set_clip(rid, true);
-                    gd_rs.canvas_item_set_draw_index(rid, index as _);
+                    gd_rs.canvas_item_set_draw_index(rid, index as i32 + 1000);
                 } else {
                     let rid = self.canvas_items[index];
                     gd_rs.canvas_item_clear(rid);
