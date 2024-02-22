@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::{hash_map, HashSet, VecDeque},
     mem::take,
     sync::{
@@ -56,7 +57,7 @@ pub struct EguiBridge {
     /// # NOTE
     ///
     /// Lock order MUST be `share.viewports` -> `painters.`
-    surfaces: Mutex<ViewportIdMap<SurfaceContext>>,
+    surfaces: RefCell<ViewportIdMap<SurfaceContext>>,
 }
 
 #[derive(Clone)]
@@ -519,7 +520,7 @@ impl EguiBridge {
         // Deal with removed viewports
         for id in remaining_viewports {
             // Painter should be freed first, then viewport.
-            Self::free_surface(self.surfaces.lock().remove(&id));
+            Self::free_surface(self.surfaces.borrow_mut().remove(&id));
 
             // Spawned viewports may never be removed as long as it is not disposed, since
             // the main loop guarantees to keep it alive by calling `show_viewport_deferred`
@@ -565,7 +566,7 @@ impl EguiBridge {
         }
 
         // Paint all viewports
-        for (id, mut paint) in self.surfaces.lock().clone() {
+        for (id, mut paint) in self.surfaces.borrow_mut().clone() {
             let Some(rx_primitives) = self
                 .share
                 .viewports
@@ -614,7 +615,7 @@ impl EguiBridge {
         build_with_parent: Option<(ViewportId, ViewportBuilder)>,
     ) {
         // Checkout painter
-        let mut surface = with_drop(self.surfaces.lock().remove(&id), Self::free_surface);
+        let mut surface = with_drop(self.surfaces.borrow_mut().remove(&id), Self::free_surface);
 
         // Check if this is from spawned viewports
         let spawned_dispose = self
@@ -669,7 +670,12 @@ impl EguiBridge {
                 let gd_wnd_parent = build_with_parent
                     .as_ref()
                     .map(|x| x.0)
-                    .and_then(|id| self.surfaces.lock().get(&id).and_then(|x| x.window.clone()))
+                    .and_then(|id| {
+                        self.surfaces
+                            .borrow_mut()
+                            .get(&id)
+                            .and_then(|x| x.window.clone())
+                    })
                     .unwrap_or_else(|| self.base().get_window().expect("not added in tree!"));
 
                 let (updates, _) = build_with_parent
@@ -947,7 +953,7 @@ impl EguiBridge {
             .insert(id, input);
 
         // Checkin surface again.
-        self.surfaces.lock().pipe(|mut x| {
+        self.surfaces.borrow_mut().pipe(|mut x| {
             x.entry(id).or_insert(surface);
         });
     }
