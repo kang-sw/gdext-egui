@@ -166,10 +166,8 @@ impl IControl for EguiViewportBridge {
             // reaching out to `gui_input()` callbacks of any.
             b.set_mouse_filter(MouseFilter::IGNORE);
 
-            // We're commenting out following line since we're ignoring any mouse input
-            // for this node, setting `CLICK` focus mode on this is pointless.
-            //
-            //   b.set_focus_mode(FocusMode::CLICK);
+            // Make this node to be focusable
+            b.set_focus_mode(FocusMode::CLICK);
         });
     }
 
