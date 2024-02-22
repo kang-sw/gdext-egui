@@ -17,8 +17,10 @@ use egui::{
 };
 use godot::{
     engine::{
-        self, control::LayoutPreset, display_server::CursorShape, window, DisplayServer,
-        ICanvasLayer, WeakRef,
+        self,
+        control::{LayoutPreset, MouseFilter},
+        display_server::CursorShape,
+        window, CanvasLayer, Control, DisplayServer, ICanvasLayer, IControl, WeakRef,
     },
     prelude::*,
 };
@@ -35,7 +37,7 @@ use crate::{default, helpers::ToCounterpart, surface};
 #[derive(GodotClass)]
 #[class(tool, base=CanvasLayer, init, rename=GodotEguiBridge)]
 pub struct EguiBridge {
-    base: Base<engine::CanvasLayer>,
+    base: Base<CanvasLayer>,
     share: Arc<SharedContext>,
 
     /// Number of bits allowed for texture size.
@@ -174,7 +176,12 @@ type FnDeferredContextAccess = dyn FnOnce(&egui::Context) + 'static;
 #[godot_api]
 impl ICanvasLayer for EguiBridge {
     fn ready(&mut self) {
-        self.setup_egui()
+        self.setup_egui();
+
+        self.base_mut().tap_mut(|b| {
+            // b.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
+            // b.set_mouse_filter(MouseFilter::IGNORE);
+        });
     }
 
     fn process(&mut self, _dt: f64) {
@@ -758,7 +765,6 @@ impl EguiBridge {
 
             // Rebuild UI.
             let mut gd_painter = surface::EguiViewportBridge::new_alloc();
-            gd_painter.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
 
             let ctx = self.share.egui.clone();
             gd_painter.bind_mut().initiate(

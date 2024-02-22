@@ -17,9 +17,9 @@ unsafe impl ExtensionLibrary for MyExtension {}
 /* ------------------------------------------ Showcase ------------------------------------------ */
 
 #[derive(GodotClass)]
-#[class(init, base=CanvasLayer)]
+#[class(init, base=Node)]
 struct Showcase {
-    base: Base<CanvasLayer>,
+    base: Base<Node>,
 
     /// This should be set from editor
     #[init(default = OnReady::manual())]
@@ -29,7 +29,7 @@ struct Showcase {
 }
 
 #[godot_api]
-impl ICanvasLayer for Showcase {
+impl INode for Showcase {
     fn ready(&mut self) {
         self.egui.init(gdext_egui::EguiBridge::new_alloc());
 

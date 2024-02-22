@@ -27,11 +27,11 @@ Start Godot 4.2.1 at [`example/`](example/) directory, giving first argument [`S
     - [ ] <-> Godot
     - [ ] <-> OS
 - [x] Rendering
+  - [ ] Clipping
 - [ ] Utilities
   - [ ] Call from GdScript
   - [ ] Property display (for editor integration)
 
 # Known Issues
 
-Currently `ctrl + x` key sequence doesn't work...
-
+- [ ] When tool mode, hot-reloading incurs editor crash on next `EguiBridge::process` call.

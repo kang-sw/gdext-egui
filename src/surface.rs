@@ -2,7 +2,7 @@ use egui::ahash::HashMap;
 use godot::{
     engine::{
         self,
-        control::FocusMode,
+        control::{LayoutPreset, MouseFilter},
         global::{self, KeyModifierMask},
         notify::ControlNotification,
         Control, DisplayServer, IControl, ImageTexture, InputEventKey, InputEventMouseButton,
@@ -148,7 +148,29 @@ impl Drop for EguiViewportBridge {
 #[godot_api]
 impl IControl for EguiViewportBridge {
     fn ready(&mut self) {
-        self.base_mut().set_focus_mode(FocusMode::CLICK);
+        self.base_mut().tap_mut(|b| {
+            // Makes node to fill the whole available space
+            b.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
+
+            // NOTE:
+            //
+            // Godot's default `gui_input` handling method, does not propagate inputs into
+            // its siblings if they are obscured by this node. Since we're creating a
+            // control which covers entire drawable space, and intercepting all inputs, if
+            // mouse filter is applied anything other than `IGNORE` would effectively
+            // prevent all other non-parent node to receive any input.
+            //
+            // Therefore, we rather intercept any inputs in `_input()` method, and if we
+            // need to consume the input inside egui, we rather make call to
+            // `Viewport::set_input_as_handled()` which consumes input even before
+            // reaching out to `gui_input()` callbacks of any.
+            b.set_mouse_filter(MouseFilter::IGNORE);
+
+            // We're commenting out following line since we're ignoring any mouse input
+            // for this node, setting `CLICK` focus mode on this is pointless.
+            //
+            //   b.set_focus_mode(FocusMode::CLICK);
+        });
     }
 
     fn on_notification(&mut self, what: ControlNotification) {
@@ -167,15 +189,6 @@ impl IControl for EguiViewportBridge {
     }
 
     fn input(&mut self, event: Gd<engine::InputEvent>) {
-        let gd_self = self.to_gd();
-        let consume_input_event = move || {
-            //    gd_self.accept_event();  // Changed to use `input`
-
-            if let Some(mut vp) = gd_self.get_viewport() {
-                vp.set_input_as_handled();
-            }
-        };
-
         let Some(ctx) = &self.context else { return };
 
         let event = match event.try_cast::<InputEventMouseMotion>() {
@@ -186,7 +199,7 @@ impl IControl for EguiViewportBridge {
                 ));
 
                 if ctx.wants_pointer_input() {
-                    consume_input_event();
+                    self.mark_input_handled();
                 }
 
                 return;
@@ -263,7 +276,9 @@ impl IControl for EguiViewportBridge {
                 self.on_event(event);
 
                 if ctx.wants_pointer_input() {
-                    consume_input_event();
+                    // We grab focus only with clicks
+                    self.to_gd().grab_focus();
+                    self.mark_input_handled();
                 }
 
                 return;
@@ -291,7 +306,7 @@ impl IControl for EguiViewportBridge {
                         self.on_event(event);
 
                         if ctx.wants_keyboard_input() {
-                            consume_input_event();
+                            self.mark_input_handled();
                         }
 
                         return;
@@ -322,7 +337,7 @@ impl IControl for EguiViewportBridge {
                 }
 
                 if ctx.wants_keyboard_input() {
-                    consume_input_event();
+                    self.mark_input_handled();
                 }
 
                 return;
@@ -339,6 +354,14 @@ impl EguiViewportBridge {
         if let Some(ev) = self.fwd_event.as_deref() {
             ev(event);
         }
+    }
+
+    fn mark_input_handled(&mut self) {
+        if let Some(mut vp) = self.to_gd().get_viewport() {
+            vp.set_input_as_handled();
+        }
+
+        godot_print!("We have input!");
     }
 
     pub fn initiate(&mut self, ctx: egui::Context, on_event: Box<dyn Fn(egui::Event)>) {
@@ -361,7 +384,7 @@ impl EguiViewportBridge {
 
                     gd_rs.canvas_item_set_parent(rid, rid_self_canvas);
                     gd_rs.canvas_item_set_clip(rid, true);
-                    gd_rs.canvas_item_set_draw_index(rid, index as i32 + 1000);
+                    gd_rs.canvas_item_set_draw_index(rid, index as i32);
                 } else {
                     let rid = self.canvas_items[index];
                     gd_rs.canvas_item_clear(rid);
