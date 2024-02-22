@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
-egui = "0.26"
+egui = { version = "0.26", git = "https://github.com/emilk/egui.git", tag = "0.26.2" }
 
 itertools = "0.12"
 

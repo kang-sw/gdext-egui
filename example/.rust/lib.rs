@@ -14,9 +14,43 @@ struct MyExtension;
 #[gdextension]
 unsafe impl ExtensionLibrary for MyExtension {}
 
+/* ------------------------------------------ Showcase ------------------------------------------ */
+
 #[derive(GodotClass)]
 #[class(init, base=CanvasLayer)]
 struct Showcase {
+    base: Base<CanvasLayer>,
+
+    /// This should be set from editor
+    #[init(default = OnReady::manual())]
+    egui: OnReady<Gd<gdext_egui::EguiBridge>>,
+
+    demos: egui_demo_lib::DemoWindows,
+}
+
+#[godot_api]
+impl ICanvasLayer for Showcase {
+    fn ready(&mut self) {
+        self.egui.init(gdext_egui::EguiBridge::new_alloc());
+
+        let mut gd_self = self.to_gd();
+        gd_self.add_child(self.egui.clone().upcast());
+        self.egui.set_owner(gd_self.upcast());
+    }
+
+    fn process(&mut self, _d: f64) {
+        let ctx = self.egui.bind().current_frame().clone();
+        self.demos.ui(&ctx);
+    }
+}
+
+/* --------------------------------------- Tool Mode Test --------------------------------------- */
+
+/// With this node, as soon as you open the scene that this node is included, it'll start
+/// showing the UI.
+#[derive(GodotClass)]
+#[class(tool, init, base=CanvasLayer)]
+struct ToolTest {
     base: Base<CanvasLayer>,
 
     /// This should be set from editor
@@ -30,7 +64,7 @@ struct Showcase {
 }
 
 #[godot_api]
-impl ICanvasLayer for Showcase {
+impl ICanvasLayer for ToolTest {
     fn ready(&mut self) {
         let Some(mut vp) = self.base_mut().get_viewport() else {
             godot_error!("Viewport not found");

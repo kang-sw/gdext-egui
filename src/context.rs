@@ -33,7 +33,7 @@ use crate::{default, helpers::ToCounterpart, surface};
 
 /// Primary Egui Interface.
 #[derive(GodotClass)]
-#[class(base=CanvasLayer, init, rename=GodotEguiBridge)]
+#[class(tool, base=CanvasLayer, init, rename=GodotEguiBridge)]
 pub struct EguiBridge {
     base: Base<engine::CanvasLayer>,
     share: Arc<SharedContext>,

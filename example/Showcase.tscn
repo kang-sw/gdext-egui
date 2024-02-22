@@ -1,9 +1,6 @@
 [gd_scene format=3 uid="uid://olmgb0iwu03f"]
 
-[node name="Showcase" type="Showcase" node_paths=PackedStringArray("egui")]
-egui = NodePath("GodotEguiBridge")
-
-[node name="GodotEguiBridge" type="GodotEguiBridge" parent="."]
+[node name="Showcase" type="Showcase"]
 
 [node name="Button" type="Button" parent="."]
 offset_left = 118.0
