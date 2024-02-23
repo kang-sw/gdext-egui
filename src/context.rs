@@ -19,8 +19,7 @@ use egui::{
 };
 use godot::{
     engine::{
-        self, control::MouseFilter, window, CanvasLayer, DisplayServer, ICanvasLayer, InputEvent,
-        WeakRef,
+        self, control::MouseFilter, window, CanvasLayer, DisplayServer, ICanvasLayer, WeakRef,
     },
     prelude::*,
 };
@@ -311,15 +310,6 @@ impl EguiBridge {
 
         // Ensure the ui frame gets
         self.queue_try_start_frame();
-    }
-
-    /// For editor plugin only; forward any input occurred in viewport to EGUI. Returns
-    /// true when the EGUI consumed the input. This is only valid when you spawned EGUI
-    /// instance in editor main viewport!
-    pub fn forward_canvas_gui_input_to_root(&self, _event: Gd<InputEvent>) -> bool {
-        // TODO: Forward input to root viewport.
-
-        false
     }
 }
 
