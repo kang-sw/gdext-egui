@@ -118,7 +118,7 @@ impl TextureLibrary {
 
 /// Represents a spawned viewport
 #[derive(GodotClass)]
-#[class(tool, base=Control, init, hidden, rename=INTERNAL__GodotEguiViewportBridge)]
+#[class(base=Control, init, hidden, rename=INTERNAL__GodotEguiViewportBridge)]
 pub(crate) struct EguiViewportBridge {
     base: Base<Control>,
 

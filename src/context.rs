@@ -36,7 +36,7 @@ use crate::{default, helpers::ToCounterpart, surface};
 
 /// Primary Egui Interface.
 #[derive(GodotClass)]
-#[class(tool, base=CanvasLayer, init, rename=GodotEguiBridge)]
+#[class(base=CanvasLayer, init, rename=GodotEguiBridge)]
 pub struct EguiBridge {
     base: Base<CanvasLayer>,
     share: Arc<SharedContext>,
@@ -316,7 +316,7 @@ impl EguiBridge {
     /// For editor plugin only; forward any input occurred in viewport to EGUI. Returns
     /// true when the EGUI consumed the input. This is only valid when you spawned EGUI
     /// instance in editor main viewport!
-    pub fn forward_canvas_gui_input(&self, _event: Gd<InputEvent>) -> bool {
+    pub fn forward_canvas_gui_input_to_root(&self, _event: Gd<InputEvent>) -> bool {
         // TODO: Forward input to root viewport.
 
         false
@@ -496,7 +496,6 @@ impl EguiBridge {
             let scheduled = if let Some(viewport) = share.viewports.lock().get_mut(&vp_id) {
                 if viewport.close_request.load(Relaxed) == VIEWPORT_CLOSE_CLOSE {
                     // If this is `PENDING`, it means the user side renderer has already
-
                     // seen viewport close request, however, didn't deal with it, which
                     // means accepted disposal of viewport close.
 
@@ -930,7 +929,7 @@ impl EguiBridge {
                 }
                 OuterPosition(pos) => window.set_position(pos.to_alternative()),
 
-                // FIXME: Accurately, the painter should be updated with new size.
+                // FIXME: Change painter size; not the containing window size.
                 InnerSize(size) => window.set_size(size.to_alternative()),
                 MinInnerSize(size) => window.set_min_size(size.to_alternative()),
                 MaxInnerSize(size) => window.set_max_size(size.to_alternative()),

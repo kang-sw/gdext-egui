@@ -314,6 +314,10 @@ impl EguiBridge {
 
 impl EguiBridge {
     pub(super) fn _start_frame_handle_widgets(&self) {
+        if self.widget.hide_all.get() {
+            return;
+        }
+
         // NOTE: Temporarily disabled.
         // - Seems after adding top-bottom panel, splitting the rest again with top and
         //   bottom makes the layout process broken; I don't understand why.
