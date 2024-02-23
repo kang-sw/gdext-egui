@@ -447,6 +447,13 @@ impl EguiViewportBridge {
                 *dst = *src as i32;
             }
 
+            let clip = primitive.clip_rect;
+            gd_rs.canvas_item_set_clip(rid_item, true);
+            gd_rs
+                .canvas_item_set_custom_rect_ex(rid_item, true)
+                .rect(clip.to_counterpart())
+                .done();
+
             gd_rs
                 .canvas_item_add_triangle_array_ex(rid_item, indices, verts, cologd_rs)
                 .texture(texture.get_rid())
