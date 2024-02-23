@@ -1,7 +1,6 @@
 //! Widget related APIs. Detached due to verbosity.
 
 use std::{
-    collections::BTreeMap,
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
@@ -81,7 +80,6 @@ pub enum PanelGroup {
     Left,
     Right,
     Central,
-
     BottomRight,
     BottomLeft,
 }
@@ -342,13 +340,7 @@ impl EguiBridge {
                 }
             };
 
-            widgets.insert(
-                (group, slot_index),
-                PanelItem {
-                    draw,
-                    retain: Default::default(),
-                },
-            );
+            widgets.insert((group, slot_index), PanelItem { draw });
         }
 
         // Based on layout; draw widgets
@@ -360,40 +352,79 @@ impl EguiBridge {
             PanelGroup::BottomRight,
         ];
 
-        let [has_left, has_right, has_central, has_bottom_left, has_bottom_right] =
+        let [has_left, has_right, has_center, has_bottom_left, has_bottom_right] =
             enums.map(|x| widgets.range_mut(x.range()).any(|_| true));
+        let has_top = has_left || has_right || has_center;
+        let has_bottom = has_bottom_left || has_bottom_right;
 
-        fn draw_fn(
-            ui: &mut egui::Ui,
-            widgets: &mut BTreeMap<(PanelGroup, i32), Box<FnShowWidget>>,
-            group: PanelGroup,
-        ) {
-            // TODO: Draw widgets
+        let mut disposed = Vec::new();
+
+        macro_rules! draw_group {
+            ($ui:expr, $panel:expr) => {
+                for (index, item) in widgets.range_mut($panel.range()) {
+                    let retain = (item.draw)($ui);
+
+                    if retain == WidgetRetain::Dispose {
+                        disposed.push(*index);
+                    }
+                }
+            };
         }
 
-        // Draw top side of panels
-
-        let draw_top = |ui: &mut egui::Ui| {
-            // TODO: Split sections if required
-        };
-
-        if has_left || has_right || has_central {
-            if has_bottom_left || has_bottom_right {
-                egui::TopBottomPanel::top("__RootBridge::TopBottom").show(ctx, draw_top);
-            } else {
-                egui::CentralPanel::default().show(ctx, draw_top);
-            }
-        }
-
-        // Draw bottom side of panels
-        if has_bottom_left || has_bottom_right {
-            // Always fill the rest of panel
-            egui::CentralPanel::default().show(ctx, |ui| {
-                // TODO: Draw bottom side of panels
+        // Draw bottom side of panels first; let top side expand as much as possible.
+        if has_bottom {
+            egui::TopBottomPanel::bottom("%%EguiBridge%%PanelBottom").show(ctx, |ui| {
+                match (has_bottom_left, has_bottom_right) {
+                    (true, true) => {
+                        ui.columns(2, |cols| {
+                            draw_group!(&mut cols[0], PanelGroup::BottomLeft);
+                            draw_group!(&mut cols[1], PanelGroup::BottomRight);
+                        });
+                    }
+                    (true, false) => {
+                        draw_group!(ui, PanelGroup::BottomLeft);
+                    }
+                    (false, true) => {
+                        draw_group!(ui, PanelGroup::BottomRight);
+                    }
+                    (false, false) => unreachable!(),
+                }
             });
         }
 
-        // TODO: Remove disposed widgets
+        if has_top {
+            // Draw transparent frame to fill the empty space.
+            let transparent = egui::Frame::default().fill(egui::Color32::from_black_alpha(0));
+
+            egui::CentralPanel::default()
+                .frame(transparent)
+                .show(ctx, |ui| {
+                    if has_left {
+                        egui::SidePanel::left("%%EguiBridge%%PanelLeft").show_inside(ui, |ui| {
+                            draw_group!(ui, PanelGroup::Left);
+                        });
+                    }
+
+                    if has_right {
+                        egui::SidePanel::right("%%EguiBridge%%PanelRight").show_inside(ui, |ui| {
+                            draw_group!(ui, PanelGroup::Right);
+                        });
+                    }
+
+                    if has_center {
+                        egui::CentralPanel::default()
+                            .frame(transparent)
+                            .show_inside(ui, |ui| {
+                                draw_group!(ui, PanelGroup::Central);
+                            });
+                    }
+                });
+        }
+
+        // Gc removed entries.
+        for index in disposed {
+            assert!(widgets.remove(&index).is_some());
+        }
     }
 }
 
@@ -418,5 +449,4 @@ pub(super) enum NewWidgetSlot {
 /// Widget declaration & context
 pub(super) struct PanelItem {
     draw: Box<FnShowWidget>,
-    retain: WidgetRetain,
 }

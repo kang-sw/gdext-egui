@@ -1,0 +1,5 @@
+[gd_scene format=3 uid="uid://c85sf1aw3b6l8"]
+
+[node name="SpawnTest" type="Node"]
+
+[node name="WidgetExample" type="WidgetExample" parent="."]
