@@ -58,6 +58,8 @@ impl INode for Showcase {
 
 Start Godot 4.2.1 at [`example/`](example/) directory, giving first argument [`Showcase.tscn`](example/Showcase.tscn)
 
+> Before doing this, you must compile the rust gdextension library first!
+
 # Features
 
 - [x] Window support
