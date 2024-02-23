@@ -376,17 +376,13 @@ impl EguiBridge {
             egui::TopBottomPanel::bottom("%%EguiBridge%%PanelBottom").show(ctx, |ui| {
                 match (has_bottom_left, has_bottom_right) {
                     (true, true) => {
-                        ui.columns(2, |cols| {
-                            draw_group!(&mut cols[0], PanelGroup::BottomLeft);
-                            draw_group!(&mut cols[1], PanelGroup::BottomRight);
-                        });
+                        egui::SidePanel::left("%%EguiBridge%%PanelBottomLeft")
+                            .show_inside(ui, |ui| draw_group!(ui, PanelGroup::BottomLeft));
+                        egui::CentralPanel::default()
+                            .show_inside(ui, |ui| draw_group!(ui, PanelGroup::Central));
                     }
-                    (true, false) => {
-                        draw_group!(ui, PanelGroup::BottomLeft);
-                    }
-                    (false, true) => {
-                        draw_group!(ui, PanelGroup::BottomRight);
-                    }
+                    (true, false) => draw_group!(ui, PanelGroup::BottomLeft),
+                    (false, true) => draw_group!(ui, PanelGroup::BottomRight),
                     (false, false) => unreachable!(),
                 }
             });
@@ -400,23 +396,19 @@ impl EguiBridge {
                 .frame(transparent)
                 .show(ctx, |ui| {
                     if has_left {
-                        egui::SidePanel::left("%%EguiBridge%%PanelLeft").show_inside(ui, |ui| {
-                            draw_group!(ui, PanelGroup::Left);
-                        });
+                        egui::SidePanel::left("%%EguiBridge%%PanelLeft")
+                            .show_inside(ui, |ui| draw_group!(ui, PanelGroup::Left));
                     }
 
                     if has_right {
-                        egui::SidePanel::right("%%EguiBridge%%PanelRight").show_inside(ui, |ui| {
-                            draw_group!(ui, PanelGroup::Right);
-                        });
+                        egui::SidePanel::right("%%EguiBridge%%PanelRight")
+                            .show_inside(ui, |ui| draw_group!(ui, PanelGroup::Right));
                     }
 
                     if has_center {
                         egui::CentralPanel::default()
                             .frame(transparent)
-                            .show_inside(ui, |ui| {
-                                draw_group!(ui, PanelGroup::Central);
-                            });
+                            .show_inside(ui, |ui| draw_group!(ui, PanelGroup::Central));
                     }
                 });
         }
