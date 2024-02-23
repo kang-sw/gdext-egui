@@ -476,7 +476,6 @@ impl EguiViewportBridge {
             let clip = primitive.clip_rect;
             gd_rs.canvas_item_set_clip(rid_item, true);
 
-            // FIXME: Clipping doesn't work at all?
             gd_rs
                 .canvas_item_set_custom_rect_ex(rid_item, true)
                 .rect(clip.to_counterpart())
@@ -487,6 +486,21 @@ impl EguiViewportBridge {
                 .texture(texture.get_rid())
                 .uvs(uvs)
                 .done();
+
+            #[cfg(any())] // Clip rect vis for debugging purpose.
+            {
+                let line = [
+                    clip.min,
+                    clip.min.tap_mut(|x| x.x = clip.max.x),
+                    clip.max,
+                    clip.min.tap_mut(|x| x.y = clip.max.y),
+                ]
+                .map(|x| x.to_counterpart());
+
+                line.windows(2).for_each(|x| {
+                    gd_rs.canvas_item_add_line(rid_item, x[0], x[1], Color::GREEN);
+                });
+            }
         }
     }
 }
