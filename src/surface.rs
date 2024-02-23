@@ -29,8 +29,6 @@ struct TextureDescriptor {
 
 impl TextureLibrary {
     pub fn update_texture(&mut self, id: egui::TextureId, src: egui::epaint::ImageDelta) {
-        godot_print!("Adding Texture: {:?}", id);
-
         // Retrieve image from delivered data
         let src_image = {
             let mut payload = PackedByteArray::new();
@@ -76,6 +74,7 @@ impl TextureLibrary {
         };
 
         if let Some(pos) = src.pos {
+            godot_print!("Modifying Texture: {id:?}, {pos:?}");
             let tex = self.textures.get_mut(&id).unwrap();
 
             let src_size = src_image.get_size();
@@ -86,6 +85,8 @@ impl TextureLibrary {
             tex.gd_src_img
                 .blit_rect(src_image, Rect2i::new(Vector2i::ZERO, src_size), dst_pos);
         } else {
+            godot_print!("Adding Texture: {id:?}");
+
             let Some(gd_tex) = engine::ImageTexture::create_from_image(src_image.clone()) else {
                 godot_error!("Failed to create texture from image!");
                 return;
@@ -234,6 +235,7 @@ impl EguiViewportBridge {
                 let button = event.get_button_index();
                 let pos = event.get_position().to_alternative();
 
+                #[derive(Debug)]
                 enum Type {
                     Btn(egui::PointerButton),
                     Wheel { horizontal: bool, delta: f32 },
@@ -256,11 +258,11 @@ impl EguiViewportBridge {
 
                     global::MouseButton::WHEEL_DOWN => Wheel {
                         horizontal: false,
-                        delta: factor,
+                        delta: -factor,
                     },
                     global::MouseButton::WHEEL_UP => Wheel {
                         horizontal: false,
-                        delta: -factor,
+                        delta: factor,
                     },
                     global::MouseButton::WHEEL_RIGHT => Wheel {
                         horizontal: true,
@@ -273,24 +275,48 @@ impl EguiViewportBridge {
                     _ => return false,
                 };
 
-                let event = match r {
-                    Btn(button) => egui::Event::PointerButton {
+                match r {
+                    Btn(button) => self.on_event(egui::Event::PointerButton {
                         pos,
                         button,
                         pressed: event.is_pressed(),
                         modifiers,
-                    },
-                    Wheel { horizontal, delta } => egui::Event::MouseWheel {
-                        unit: egui::MouseWheelUnit::Line,
-                        delta: egui::vec2(
-                            if horizontal { delta } else { 0.0 },
-                            if !horizontal { delta } else { 0.0 },
-                        ),
-                        modifiers,
-                    },
-                };
+                    }),
+                    Wheel { horizontal, delta } => {
+                        self.on_event(egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Line,
+                            delta: egui::vec2(
+                                if horizontal { delta } else { 0.0 },
+                                if !horizontal { delta } else { 0.0 },
+                            ),
+                            modifiers,
+                        });
 
-                self.on_event(event);
+                        // Check if it's scrolling
+                        if modifiers.matches_logically(egui::Modifiers::CTRL) {
+                            // Zoom value should be in range -1 ~ 1 => B^(powf)
+                            const B: f32 = 2.0;
+                            self.on_event(egui::Event::Zoom(B.powf(delta)));
+                        } else {
+                            let delta = if modifiers.shift_only() {
+                                // Horizontal
+                                Some([delta, 0.0])
+                            } else if modifiers.is_none() {
+                                Some([0.0, delta])
+                            } else {
+                                None
+                            };
+
+                            if let Some(delta) = delta {
+                                const SCROLL_AMOUNT: f32 = 100.;
+
+                                self.on_event(egui::Event::Scroll(
+                                    egui::Vec2::from(delta) * SCROLL_AMOUNT,
+                                ));
+                            }
+                        }
+                    }
+                };
 
                 return if ctx.wants_pointer_input() {
                     // We grab focus only with clicks
