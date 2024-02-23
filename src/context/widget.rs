@@ -162,11 +162,37 @@ impl CheckExpired for bool {
 pub trait FnEguiDrawExt<L: Into<WidgetRetain>>: Sized + FnEguiDraw<L> {
     /// Set the expiration time of the widget. If the widget is not disposed after the given
     /// system time, it'll be disposed automatically.
-    fn expires_at(self, at: Instant) -> impl FnEguiDrawExt<WidgetRetain>;
+    fn expires_at(mut self, expiration: Instant) -> impl FnEguiDrawExt<WidgetRetain> {
+        move |ui: &mut egui::Ui| {
+            if Instant::now() > expiration {
+                WidgetRetain::Dispose
+            } else {
+                self(ui).into()
+            }
+        }
+    }
 
     /// Set the expiration time of the widget. If the widget is not disposed after the given
     /// time, it'll be disposed automatically.
-    fn bind<C: CheckExpired>(self, owner: impl Into<C>) -> impl FnEguiDrawExt<WidgetRetain>;
+    fn bind<C: CheckExpired>(mut self, owner: impl Into<C>) -> impl FnEguiDrawExt<WidgetRetain> {
+        let expired = owner.into();
+        move |ui: &mut egui::Ui| {
+            if expired.expired() {
+                WidgetRetain::Dispose
+            } else {
+                self(ui).into()
+            }
+        }
+    }
+
+    /// Trigger the widget only once. After the first call, the widget will be disposed.
+    fn once(mut self) -> impl FnEguiDrawExt<WidgetRetain> {
+        move |ui: &mut egui::Ui| {
+            // Only the first call will be executed.
+            let _ = self(ui).into();
+            WidgetRetain::Dispose
+        }
+    }
 
     /// Set the lifespan of the widget. If the widget is not disposed after the given
     /// time, it'll be disposed automatically.
@@ -185,26 +211,6 @@ where
     T: FnMut(&mut egui::Ui) -> L + 'static,
     L: Into<WidgetRetain> + 'static,
 {
-    fn expires_at(mut self, expiration: Instant) -> impl FnEguiDrawExt<WidgetRetain> {
-        move |ui: &mut egui::Ui| {
-            if Instant::now() > expiration {
-                WidgetRetain::Dispose
-            } else {
-                self(ui).into()
-            }
-        }
-    }
-
-    fn bind<C: CheckExpired>(mut self, owner: impl Into<C>) -> impl FnEguiDrawExt<WidgetRetain> {
-        let expired = owner.into();
-        move |ui: &mut egui::Ui| {
-            if expired.expired() {
-                WidgetRetain::Dispose
-            } else {
-                self(ui).into()
-            }
-        }
-    }
 }
 
 /* ---------------------------------------------------------------------------------------------- */
