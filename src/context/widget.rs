@@ -35,6 +35,10 @@ impl WidgetRetain {
             _ => Self::Unspecified,
         }
     }
+
+    pub fn disposed(&self) -> bool {
+        matches!(self, Self::Dispose)
+    }
 }
 
 impl From<bool> for WidgetRetain {
@@ -237,7 +241,10 @@ impl EguiBridge {
     ///
     /// Spawning another menu item inside widget callback is not allowed. (This behavior
     /// can be changed in the future)
-    pub fn menu_item_insert<T, L>(
+    ///
+    ///
+    /// TODO: Fix this API and expose.
+    fn _menu_item_insert<T, L>(
         &self,
         path: impl IntoIterator<Item = T>,
         mut widget: impl FnEguiDraw<L>,
@@ -245,7 +252,7 @@ impl EguiBridge {
         T: Into<String>,
         L: Into<WidgetRetain>,
     {
-        let mut node = &mut *self.widget.menu_items.borrow_mut();
+        let mut node = &mut *self.widget.menu_root.borrow_mut();
         for seg in path {
             let seg = seg.into();
             node = node.children.entry(seg).or_default();
@@ -306,11 +313,62 @@ impl EguiBridge {
 /* ------------------------------------------ Internals ----------------------------------------- */
 
 impl EguiBridge {
-    pub(super) fn _finish_frame_render_spawned_main_menu(&self) {
-        // TODO
+    pub(super) fn _start_frame_handle_widgets(&self) {
+        // NOTE: Temporarily disabled.
+        // - Seems after adding top-bottom panel, splitting the rest again with top and
+        //   bottom makes the layout process broken; I don't understand why.
+        // - To resolve this, we have to add central panel to fit rest of the space, and
+        //   spawning rest of panels inside the central panel => which effectively
+        //   disables forwarding input events to underlying game UI.
+        // - Until we find a better solution, menu bar will be disabled.
+        //
+        //     self.render_main_menu();
+
+        // Render widgets
+        self.render_widget_items();
     }
 
-    pub(super) fn _finish_frame_render_spawned_panels(&self) {
+    fn _render_main_menu(&self) {
+        let mut root = self.widget.menu_root.borrow_mut();
+
+        if root.children.is_empty() && root.draw.is_none() {
+            return;
+        }
+
+        egui::TopBottomPanel::top("%%EguiBridge%%MainMenu").show(&self.share.egui, |ui| {
+            egui::menu::bar(ui, |ui| {
+                recurse_node(ui, &mut root);
+            })
+        });
+
+        fn recurse_node(ui: &mut egui::Ui, node: &mut MenuNode) -> WidgetRetain {
+            if let Some(draw) = &mut node.draw {
+                if (draw)(ui).disposed() {
+                    node.draw = None;
+                    dbg!("IMALIVE YTET");
+                }
+            }
+
+            node.children.retain(|key, v| {
+                let should_retain = ui
+                    .menu_button(key, |ui| !recurse_node(ui, v).disposed())
+                    .inner
+                    .unwrap_or(true);
+
+                std::hint::black_box(should_retain);
+
+                should_retain
+            });
+
+            if node.draw.is_none() && node.children.is_empty() {
+                WidgetRetain::Dispose
+            } else {
+                WidgetRetain::Retain
+            }
+        }
+    }
+
+    fn render_widget_items(&self) {
         // Apply widget patches right before rendering.
         let ctx = &self.share.egui;
         let widgets = &mut *self.widget.items.borrow_mut();
@@ -409,12 +467,14 @@ impl EguiBridge {
 
         if has_top {
             egui::SidePanel::left("%%EguiBridge%%PanelLeft")
+                .resizable(true)
                 .frame(opaque)
                 .show_animated(ctx, has_left && !w.hide_left.get(), |ui| {
                     draw_group!(ui, PanelGroup::Left)
                 });
 
             egui::SidePanel::right("%%EguiBridge%%PanelRight")
+                .resizable(true)
                 .frame(opaque)
                 .show_animated(ctx, has_right && !w.hide_right.get(), |ui| {
                     draw_group!(ui, PanelGroup::Right)
@@ -482,7 +542,7 @@ pub struct SpawnedWidgetContext {
     items_new: RefCell<Vec<NewWidgetItem>>,
 
     /// List of menus
-    menu_items: RefCell<MenuNode>,
+    menu_root: RefCell<MenuNode>,
 
     // #[export]
     // #[var(get, set)]

@@ -111,29 +111,6 @@ impl INode for WidgetExample {
             },
         );
 
-        // Menu items can be spawned
-        egui.menu_item_insert(["Menu Example"], {
-            let mut hidden = false;
-            move |ui| {
-                if ui.button("Click to Hide Me!").clicked() {
-                    hidden = !hidden;
-                }
-
-                !hidden
-            }
-        });
-
-        // You can add decorations to the UI callbacks.
-        egui.menu_item_insert(
-            ["Hidden In 5 Seconds ..."],
-            {
-                |ui: &mut egui::Ui| {
-                    ui.label("Suprise!");
-                }
-            }
-            .lifespan(Duration::from_secs(5)),
-        );
-
         // There are several pre-defined panels in EguiBridge. Unless you use this
         // functionality, they don't affect any of your EGUI context. These are useful
         // when you don't want to write any *central* context your own which manages the

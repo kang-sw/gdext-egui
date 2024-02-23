@@ -229,12 +229,6 @@ impl EguiBridge {
         &self.share.egui
     }
 
-    // TODO: `panel_item_remove`, `menu_item_remove`
-
-    // TODO: `bind_console_command`, `output_to_console`, `show_console`, `toggle_console`
-    // - Adding basic console class.
-    // - Exposing godot APIs for these.
-
     /// Render viewport for current frame.
     ///
     /// This is shortcut to following code.
@@ -439,8 +433,7 @@ impl EguiBridge {
         // NOTE: Implementation is too long, thus splitting it into another function.
 
         // Handle spawned widgets most first; as it should not be affected by any other controls!
-        self._finish_frame_render_spawned_main_menu();
-        self._finish_frame_render_spawned_panels();
+        self._start_frame_handle_widgets();
     }
 
     fn finish_frame(&mut self) {
@@ -797,6 +790,18 @@ impl EguiBridge {
 
                     tx_viewport.send(ev).ok(); // Failing this is just okay.
                     ctx.request_repaint_of(id);
+                }),
+            );
+
+            let ctx = self.share.egui.clone();
+            gd_painter.connect(
+                "resized".into(),
+                Callable::from_fn("Resize", move |_| {
+                    // Deadlock workaround
+                    let ctx = ctx.clone();
+                    rayon::spawn(move || ctx.request_repaint_of(id));
+
+                    Ok(Variant::nil())
                 }),
             );
 
