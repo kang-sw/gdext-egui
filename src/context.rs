@@ -725,6 +725,7 @@ impl EguiBridge {
             hash_map::Entry::Vacant(entry) => {
                 should_rebuild = true;
 
+                #[cfg(any())]
                 godot_print!(
                     "spawning new EGUI viewport: {id:?} / {}",
                     build_with_parent

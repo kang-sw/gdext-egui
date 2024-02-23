@@ -74,7 +74,6 @@ impl TextureLibrary {
         };
 
         if let Some(pos) = src.pos {
-            godot_print!("Modifying Texture: {id:?}, {pos:?}");
             let tex = self.textures.get_mut(&id).unwrap();
 
             let src_size = src_image.get_size();
@@ -85,8 +84,6 @@ impl TextureLibrary {
             tex.gd_src_img
                 .blit_rect(src_image, Rect2i::new(Vector2i::ZERO, src_size), dst_pos);
         } else {
-            godot_print!("Resetting Texture: {id:?}");
-
             let Some(gd_tex) = engine::ImageTexture::create_from_image(src_image.clone()) else {
                 godot_error!("Failed to create texture from image!");
                 return;
