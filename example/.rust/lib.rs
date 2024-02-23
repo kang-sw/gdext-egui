@@ -3,7 +3,7 @@ use std::sync::{
     Arc,
 };
 
-use gdext_egui::{context::PanelGroup, egui, ViewportBuilder, ViewportId};
+use gdext_egui::{context::PanelGroup, egui, EguiBridge, ViewportBuilder, ViewportId};
 use godot::{
     engine::{self, CanvasLayer, ICanvasLayer},
     prelude::*,
@@ -22,28 +22,34 @@ unsafe impl ExtensionLibrary for MyExtension {}
 struct Showcase {
     base: Base<Node>,
 
-    /// This should be set from editor
+    /// Once this node is initiated, the `ready()` routine automatically initialize
+    /// required context for EGUI rendering. Usually adding this multiple times should not
+    /// be trouble, as long as you don't use immediate viewport rendering.
+    ///
+    /// If you want to call [`egui::Context::show_viewport_immediate`] method in any way,
+    /// you should not create more than single [`EguiBridge`] in the scene tree.
     #[init(default = OnReady::manual())]
-    egui: OnReady<Gd<gdext_egui::EguiBridge>>,
+    egui: OnReady<Gd<EguiBridge>>,
 
     demos: egui_demo_lib::DemoWindows,
 }
 
 #[godot_api]
 impl INode for Showcase {
-    fn process(&mut self, _d: f64) {
-        // Actually this is all you need.
-        let ctx = self.egui.bind().current_frame().clone();
-        self.demos.ui(&ctx);
-    }
-
     fn ready(&mut self) {
-        self.egui.init(gdext_egui::EguiBridge::new_alloc());
+        self.egui.init(EguiBridge::new_alloc());
 
         // `EguiBridge` MUST be registered in scene tree to work properly!
         let mut gd_self = self.to_gd();
         gd_self.add_child(self.egui.clone().upcast());
         self.egui.set_owner(gd_self.upcast());
+    }
+
+    fn process(&mut self, _d: f64) {
+        // If you hope to put UI code in main loop, you MUST get `egui::Context` via
+        // `EguiBridge::current_frame()` method!
+        let ctx = self.egui.bind().current_frame().clone();
+        self.demos.ui(&ctx);
     }
 }
 
@@ -58,7 +64,7 @@ struct WidgetExample {
 
     /// This should be set from editor
     #[init(default = OnReady::manual())]
-    egui: OnReady<Gd<gdext_egui::EguiBridge>>,
+    egui: OnReady<Gd<EguiBridge>>,
 }
 
 #[godot_api]
@@ -70,7 +76,7 @@ impl INode for WidgetExample {
     }
 
     fn ready(&mut self) {
-        self.egui.init(gdext_egui::EguiBridge::new_alloc());
+        self.egui.init(EguiBridge::new_alloc());
 
         let mut gd_self = self.to_gd();
         gd_self.add_child(self.egui.clone().upcast());
@@ -145,7 +151,7 @@ struct ToolTest {
 
     /// This should be set from editor
     #[export]
-    egui: Option<Gd<gdext_egui::EguiBridge>>,
+    egui: Option<Gd<EguiBridge>>,
 
     text_1: String,
     text_2: String,

@@ -1,4 +1,6 @@
-[gd_scene format=3 uid="uid://olmgb0iwu03f"]
+[gd_scene load_steps=2 format=3 uid="uid://olmgb0iwu03f"]
+
+[ext_resource type="Texture2D" uid="uid://s0l2ry3e8820" path="res://icon.svg" id="1_j17ae"]
 
 [node name="Root" type="Node"]
 
@@ -16,3 +18,8 @@ offset_right = 466.0
 offset_bottom = 144.0
 
 [node name="Showcase" type="Showcase" parent="."]
+
+[node name="Icon" type="Sprite2D" parent="."]
+position = Vector2(336, 365)
+scale = Vector2(1.75781, 1.57813)
+texture = ExtResource("1_j17ae")

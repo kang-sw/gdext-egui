@@ -11,6 +11,15 @@ godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
 gdext-egui = { git = "https://github.com/kang-sw/gdext-egui", branch = "master" }
 ```
 
+> ## NOTE
+>
+> If any API breakage from `gdext` master branch crate causes compilation error from this crate, you can add below line to `Cargo.toml` to make it compatible with current(2024-02-23 16:07:10) dependency version:
+>
+> ```toml
+> [patch.crates-io]
+> godot = { git = "https://github.com/godot-rust/gdext", rev = "6614030150950ffa6bd0311a2b914b86d5b7e9e9" }
+> ```
+
 In Rust, write a GodotClass derivative like this:
 
 ```rust
@@ -19,9 +28,10 @@ In Rust, write a GodotClass derivative like this:
 struct Showcase {
     base: Base<Node>,
 
-    /// This should be set from editor
     #[init(default = OnReady::manual())]
     egui: OnReady<Gd<gdext_egui::EguiBridge>>,
+
+    demos: egui_demo_lib::DemoWindows,
 }
 
 #[godot_api]
@@ -29,25 +39,17 @@ impl INode for Showcase {
     fn ready(&mut self) {
         self.egui.init(gdext_egui::EguiBridge::new_alloc());
 
+        // `EguiBridge` MUST be registered in scene tree to work properly!
         let mut gd_self = self.to_gd();
         gd_self.add_child(self.egui.clone().upcast());
         self.egui.set_owner(gd_self.upcast());
-
-        // Optional, if you want to viewports truly spawn a native window.
-        self.base()
-            .get_viewport()
-            .unwrap()
-            .set_embedding_subwindows(false);
     }
-
+    
     fn process(&mut self, _d: f64) {
-        // `ctx` MUST BE acquired from `current_frame()` method !!!
+        // If you hope to put UI code in main loop, you MUST get `egui::Context` 
+        // via `EguiBridge::current_frame()` method!
         let ctx = self.egui.bind().current_frame().clone();
-        
-        // Then use the ctx like as always we use egui.
-        egui::Window::new("HAHA!").show(&ctx, |ui| {
-          ui.label("hello, world!");
-        });
+        self.demos.ui(&ctx);
     }
 }
 ```
@@ -62,7 +64,8 @@ Start Godot 4.2.1 at [`example/`](example/) directory, giving first argument [`S
   - [x] Basic Viewport
     - [x] Creation / Disposal
     - [x] Mouse Input Handling
-      - [ ] In-editor widget
+      - [ ] Editor extension
+      - [ ] In-editor viewport
     - [ ] Text Input / IME support
   - [ ] "GUEST MODE" Viewports
     - Spawn EGUI layer onto any existing window, other than root viewport.
@@ -71,7 +74,7 @@ Start Godot 4.2.1 at [`example/`](example/) directory, giving first argument [`S
     - [ ] <-> Godot Editor
     - [ ] <-> OS File System
 - [x] Rendering
-  - [ ] Clipping
+  - [x] Clipping
 - [ ] Utilities
   - [ ] Expose GdScript API (Inherently, a class wrapper for frequently used methods)
   - [ ] Property display (for editor integration)

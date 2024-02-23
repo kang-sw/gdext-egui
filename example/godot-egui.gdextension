@@ -4,12 +4,12 @@ compatibility_minimum = 4.2
 reloadable = true
 
 [libraries]
-linux.debug.x86_64 =     "res://.rust/target/debug/gdext_egui_example.so"
 windows.debug.x86_64 =   "res://.rust/target/debug/gdext_egui_example.dll"
-macos.debug =            "res://.rust/target/debug/gdext_egui_example.dylib"
-macos.debug.arm64 =      "res://.rust/target/debug/gdext_egui_example.dylib"
+linux.debug.x86_64 =     "res://.rust/target/debug/libgdext_egui_example.so"
+macos.debug =            "res://.rust/target/debug/libgdext_egui_example.dylib"
+macos.debug.arm64 =      "res://.rust/target/debug/libgdext_egui_example.dylib"
 
-linux.release.x86_64 =   "res://.rust/target/release/gdext_egui_example.so"
 windows.release.x86_64 = "res://.rust/target/release/gdext_egui_example.dll"
-macos.release =          "res://.rust/target/release/gdext_egui_example.dylib"
-macos.release.arm64 =    "res://.rust/target/release/gdext_egui_example.dylib"
+linux.release.x86_64 =   "res://.rust/target/release/libgdext_egui_example.so"
+macos.release =          "res://.rust/target/release/libgdext_egui_example.dylib"
+macos.release.arm64 =    "res://.rust/target/release/libgdext_egui_example.dylib"
