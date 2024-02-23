@@ -74,7 +74,7 @@ impl INode for Showcase {
         );
 
         // Menu items can be spawned
-        egui.menu_item_spawn(["Menu Example"], {
+        egui.menu_item_insert(["Menu Example"], {
             let mut hidden = false;
             move |ui| {
                 if ui.button("Click to Hide Me!").clicked() {
@@ -90,7 +90,7 @@ impl INode for Showcase {
         // when you don't want to write any *central* context your own which manages the
         // layout and appearance of the individual UI items.
         let spawn_group_item = |group: PanelGroup, index: i32| {
-            egui.panel_item_spawn(group, index, move |ui| {
+            egui.panel_item_insert(group, index, move |ui| {
                 ui.label(format!("{:?} Panel: {}", group, index));
             });
         };
