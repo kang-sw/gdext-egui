@@ -148,12 +148,6 @@ impl CheckExpired for godot::engine::WeakRef {
     }
 }
 
-impl CheckExpired for () {
-    fn expired(&self) -> bool {
-        false
-    }
-}
-
 impl CheckExpired for bool {
     fn expired(&self) -> bool {
         !*self
@@ -469,10 +463,13 @@ impl EguiBridge {
                 }
             });
 
+        let width = ctx.available_rect().width();
+
         if has_top {
             egui::SidePanel::left("%%EguiBridge%%PanelLeft")
                 .resizable(true)
                 .frame(opaque)
+                .max_width(width / 3.)
                 .show_animated(ctx, has_left && !w.hide_left.get(), |ui| {
                     draw_group!(ui, PanelGroup::Left)
                 });
@@ -480,6 +477,7 @@ impl EguiBridge {
             egui::SidePanel::right("%%EguiBridge%%PanelRight")
                 .resizable(true)
                 .frame(opaque)
+                .max_width(width / 3.)
                 .show_animated(ctx, has_right && !w.hide_right.get(), |ui| {
                     draw_group!(ui, PanelGroup::Right)
                 });
@@ -494,7 +492,7 @@ impl EguiBridge {
                     .auto_sized()
                     .anchor(egui::Align2::LEFT_TOP, [0., 0.])
                     .show(ctx, |ui| {
-                        draw_group!(ui, PanelGroup::Central);
+                        draw_group!(#[plain], ui, PanelGroup::Central);
                     });
             }
         }
