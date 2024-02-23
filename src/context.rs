@@ -2,7 +2,7 @@ mod widget;
 
 use std::{
     cell::RefCell,
-    collections::{hash_map, BTreeMap, HashSet, VecDeque},
+    collections::{hash_map, HashSet, VecDeque},
     mem::take,
     sync::{
         atomic::{AtomicBool, AtomicU8, Ordering::Relaxed},
@@ -135,6 +135,10 @@ struct ViewportContext {
 
     /// Paint commands that is being applied,
     paint_this_frame: Option<oneshot::Receiver<Vec<egui::ClippedPrimitive>>>,
+
+    /// Logical zoom rate requested by user. The painter will accept and rescale event
+    /// position and paintings to fit the zoom rate.
+    target_ui_scale: f32,
 
     /// Cached viewport information, that we're currently updating on.
     info: egui::ViewportInfo,
@@ -637,13 +641,13 @@ impl EguiBridge {
 
         // Paint all viewports
         for (id, mut paint) in self.surfaces.borrow_mut().clone() {
-            let Some(rx_primitives) = self
+            let Some((rx_primitives, ui_scale)) = self
                 .share
                 .viewports
                 .lock()
                 .get_mut(&id)
                 .unwrap()
-                .pipe(|vp| vp.paint_this_frame.take())
+                .pipe(|vp| vp.paint_this_frame.take().map(|x| (x, vp.target_ui_scale)))
             else {
                 // This viewport is not re-rendered this frame.
                 continue;
@@ -657,7 +661,10 @@ impl EguiBridge {
                 continue;
             };
 
-            paint.painter.bind_mut().draw(&self.textures, primitives);
+            paint
+                .painter
+                .bind_mut()
+                .draw(&self.textures, primitives, ui_scale);
         }
 
         // Handle disposed textures from output.
@@ -762,6 +769,7 @@ impl EguiBridge {
                     rx_update,
                     close_request: Default::default(),
                     builder: init,
+                    target_ui_scale: 1.,
                     updates,
                     paint_this_frame: None,
                     info: default(),
@@ -1060,10 +1068,9 @@ impl EguiBridge {
             let viewport = viewport.get_mut(&id).unwrap();
 
             raw_input.events.extend(viewport.rx_update.try_iter());
-            raw_input.screen_rect = viewport
-                .info
-                .inner_rect
-                .map(|x| egui::Rect::from_min_size(egui::Pos2::ZERO, x.size()));
+            raw_input.screen_rect = viewport.info.inner_rect.map(|x| {
+                egui::Rect::from_min_size(egui::Pos2::ZERO, x.size() / viewport.target_ui_scale)
+            });
 
             raw_input.focused = viewport.info.focused.unwrap_or_default();
             raw_input.viewport_id = id;
@@ -1105,7 +1112,10 @@ impl EguiBridge {
             .lock()
             .get_mut(&id)
             .unwrap()
-            .paint_this_frame = Some(rx);
+            .pipe(|vp| {
+                vp.paint_this_frame = Some(rx);
+                vp.target_ui_scale = ppi;
+            });
 
         // Offload tesselation from game thread.
         rayon::spawn_fifo(move || {

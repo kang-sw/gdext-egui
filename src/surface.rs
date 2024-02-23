@@ -133,6 +133,10 @@ pub(crate) struct EguiViewportBridge {
 
     /// Rendered primitives
     canvas_items: Vec<Rid>,
+
+    /// Cached ui scale
+    #[init(default = 1.0)]
+    ui_scale_cache: f32,
 }
 
 impl Drop for EguiViewportBridge {
@@ -213,11 +217,13 @@ impl EguiViewportBridge {
             return false;
         };
 
+        let ui_scale = self.ui_scale_cache;
+
         let event = match event.try_cast::<InputEventMouseMotion>() {
             Err(event) => event,
             Ok(event) => {
                 self.on_event(egui::Event::PointerMoved(
-                    event.get_position().to_alternative(),
+                    event.get_position().to_alternative() / ui_scale,
                 ));
 
                 return ctx.wants_pointer_input();
@@ -233,7 +239,7 @@ impl EguiViewportBridge {
 
                 let modifiers = modifier_to_egui(event.get_modifiers_mask());
                 let button = event.get_button_index();
-                let pos = event.get_position().to_alternative();
+                let pos = event.get_position().to_alternative() / ui_scale;
 
                 #[derive(Debug)]
                 enum Type {
@@ -384,8 +390,14 @@ impl EguiViewportBridge {
         false
     }
 
-    pub fn draw(&mut self, textures: &TextureLibrary, shapes: Vec<egui::epaint::ClippedPrimitive>) {
+    pub fn draw(
+        &mut self,
+        textures: &TextureLibrary,
+        shapes: Vec<egui::epaint::ClippedPrimitive>,
+        scale: f32,
+    ) {
         let mut gd_rs = RenderingServer::singleton();
+        self.ui_scale_cache = scale;
 
         // Performs bookkeeping - Make `self.canvas_items` be same length as input shapes.
         {
@@ -457,8 +469,8 @@ impl EguiViewportBridge {
                 uvs.as_mut_slice(),
                 cologd_rs.as_mut_slice(),
             )) {
-                d_vert.x = src.pos.x;
-                d_vert.y = src.pos.y;
+                d_vert.x = src.pos.x * scale;
+                d_vert.y = src.pos.y * scale;
 
                 d_uv.x = src.uv.x;
                 d_uv.y = src.uv.y;
@@ -473,7 +485,12 @@ impl EguiViewportBridge {
                 *dst = *src as i32;
             }
 
-            let clip = primitive.clip_rect;
+            let mut clip = primitive.clip_rect;
+            clip.min.x *= scale;
+            clip.min.y *= scale;
+            clip.max.x *= scale;
+            clip.max.y *= scale;
+
             gd_rs.canvas_item_set_clip(rid_item, true);
 
             gd_rs
