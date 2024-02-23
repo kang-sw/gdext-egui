@@ -87,7 +87,13 @@ pub struct EguiBridge {
 }
 
 /// Type alias for widget declaration
-type NewWidgetItem = ((PanelGroup, i32), Box<FnShowWidget>);
+type NewWidgetItem = ((PanelGroup, NewWidgetSlot), Box<FnShowWidget>);
+
+enum NewWidgetSlot {
+    Specified(i32),
+    Append,
+    Prepend,
+}
 
 /// Widget declaration & context
 struct PanelItem {
@@ -189,7 +195,7 @@ const VIEWPORT_CLOSE_PENDING: u8 = 2;
 const VIEWPORT_CLOSE_CLOSE: u8 = 3;
 
 /// Callback for showing spawned widget.
-type FnShowWidget = dyn FnMut(&egui::Ui) -> WidgetRetain + 'static;
+type FnShowWidget = dyn FnMut(&mut egui::Ui) -> WidgetRetain + 'static;
 
 /// Callback for deferred context access, for non-rendering purposes.
 type FnDeferredContextAccess = dyn FnOnce(&egui::Context) + 'static;
@@ -317,6 +323,7 @@ mod _widget_retain {
 ///         └───────────────────┴──────────────────┘
 /// ```
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum PanelGroup {
     #[default]
     Left,
@@ -325,11 +332,6 @@ pub enum PanelGroup {
 
     BottomRight,
     BottomLeft,
-
-    /// These will spawn a new window for each of them.
-    Viewport1,
-    Viewport2,
-    Viewport3,
 }
 
 impl PanelGroup {
@@ -377,8 +379,8 @@ impl EguiBridge {
         &self.share.egui
     }
 
-    /// Add a widget item to the main menu bar. It'll return previous menu item if the
-    /// path already exists.
+    /// Add a widget item to the main menu bar. This will silently replace the existing
+    /// item if path is already exist.
     ///
     /// # Usage
     ///
@@ -394,13 +396,13 @@ impl EguiBridge {
     ///
     /// # Panics
     ///
-    /// Spawning another menu item inside widget callback is not allowed.
-    pub fn spawn_menu_item<T, L>(
+    /// Spawning another menu item inside widget callback is not allowed. (This behavior
+    /// can be changed in the future)
+    pub fn menu_item_insert<T, L>(
         &self,
         path: impl IntoIterator<Item = T>,
-        mut widget: impl FnMut(&egui::Ui) -> L + 'static,
-    ) -> Option<Box<FnShowWidget>>
-    where
+        mut widget: impl FnMut(&mut egui::Ui) -> L + 'static,
+    ) where
         T: Into<String>,
         L: Into<WidgetRetain>,
     {
@@ -410,23 +412,65 @@ impl EguiBridge {
             node = node.children.entry(seg).or_default();
         }
 
-        let show = Box::new(move |ui: &_| widget(ui).into());
-        node.draw.replace(show)
+        let show = Box::new(move |ui: &mut _| widget(ui).into());
+        node.draw.replace(show);
     }
 
     /// Add a widget item to specified panel group with given order. It'll silently
     /// replace the existing item if path is already exist.
-    pub fn spawn_panel_item<T, L>(
+    ///
+    /// For detailed information of predefined panels, see [`PanelGroup`].
+    ///
+    /// # Panics
+    ///
+    /// Slot range exceeds i32::MAX >> 1 or i32::MIN >> 1.
+    pub fn panel_item_insert<L>(
         &self,
         panel: PanelGroup,
         slot: i32,
-        mut widget: impl FnMut(&egui::Ui) -> L + 'static,
+        widget: impl FnMut(&mut egui::Ui) -> L + 'static,
     ) where
         L: Into<WidgetRetain>,
     {
-        let show = Box::new(move |ui: &_| widget(ui).into());
+        assert!((i32::MIN >> 1..=i32::MAX >> 1).contains(&slot));
+        self.impl_push_panel_item(panel, NewWidgetSlot::Specified(slot), widget);
+    }
+
+    /// Append a widget item to specified panel group. It'll be appended to the end of the
+    /// panel. It'll never
+    pub fn panel_item_push_back<L>(
+        &self,
+        panel: PanelGroup,
+        widget: impl FnMut(&mut egui::Ui) -> L + 'static,
+    ) where
+        L: Into<WidgetRetain>,
+    {
+        self.impl_push_panel_item(panel, NewWidgetSlot::Append, widget);
+    }
+
+    pub fn panel_item_push_front<L>(
+        &self,
+        panel: PanelGroup,
+        widget: impl FnMut(&mut egui::Ui) -> L + 'static,
+    ) where
+        L: Into<WidgetRetain>,
+    {
+        self.impl_push_panel_item(panel, NewWidgetSlot::Prepend, widget);
+    }
+
+    fn impl_push_panel_item<L>(
+        &self,
+        panel: PanelGroup,
+        slot: NewWidgetSlot,
+        mut widget: impl FnMut(&mut egui::Ui) -> L + 'static,
+    ) where
+        L: Into<WidgetRetain>,
+    {
+        let show = Box::new(move |ui: &mut _| widget(ui).into());
         self.widgets_new.borrow_mut().push(((panel, slot), show));
     }
+
+    // TODO: `panel_item_remove`, `menu_item_remove`
 
     // TODO: `bind_console_command`, `output_to_console`, `show_console`, `toggle_console`
     // - Adding basic console class.
@@ -605,8 +649,6 @@ impl EguiBridge {
 
                 // XXX: 256~ 65536 texture size limitation => is this practical?
                 inp.max_texture_side = Some(1 << (self.max_texture_bits as usize).clamp(8, 16));
-
-                // FIXME: Applying modifier doesn't work as expected
                 inp.modifiers = {
                     use engine::global::Key as GdKey;
 
@@ -647,9 +689,6 @@ impl EguiBridge {
         // menubar is rendered topmost of the window correctly!
         self._finish_frame_render_spawned_main_menu();
         self._finish_frame_render_spawned_panels();
-
-        // Spawn rest of viewport items
-        self._finish_frame_render_spawned_viewports();
 
         let viewports = take(&mut *share.spawned_viewports.lock()).tap_mut(|viewports| {
             // Check if any of the spawned viewports should be disposed.
@@ -896,15 +935,45 @@ impl EguiBridge {
         // Apply widget patches right before rendering.
         let ctx = &self.share.egui;
         let widgets = &mut *self.widgets.borrow_mut();
-        widgets.extend(self.widgets_new.borrow_mut().drain(..).map(|(k, v)| {
-            (
-                k,
+
+        const APPEND_SLOT_LOWER: i32 = i32::MAX >> 1;
+        const PREPEND_SLOT_UPPER: i32 = i32::MIN >> 1;
+
+        /* --------------------------------- New Slot Allocation -------------------------------- */
+
+        for ((group, slot), draw) in self.widgets_new.borrow_mut().drain(..) {
+            let slot_index = match slot {
+                NewWidgetSlot::Specified(idx) => idx,
+                NewWidgetSlot::Append => {
+                    let idx = widgets
+                        .range(group.range())
+                        .last() // For btree range, it's fast.
+                        .map(|((_, idx), ..)| *idx + 1)
+                        .unwrap_or_default()
+                        .max(APPEND_SLOT_LOWER);
+
+                    idx
+                }
+                NewWidgetSlot::Prepend => {
+                    let idx = widgets
+                        .range(group.range())
+                        .next()
+                        .map(|((_, idx), ..)| *idx - 1)
+                        .unwrap_or_default()
+                        .min(PREPEND_SLOT_UPPER);
+
+                    idx
+                }
+            };
+
+            widgets.insert(
+                (group, slot_index),
                 PanelItem {
-                    draw: v,
+                    draw,
                     retain: Default::default(),
                 },
-            )
-        }));
+            );
+        }
 
         // Based on layout; draw widgets
         let enums = [
@@ -949,10 +1018,6 @@ impl EguiBridge {
         }
 
         // TODO: Remove disposed widgets
-    }
-
-    fn _finish_frame_render_spawned_viewports(&self) {
-        // TODO
     }
 
     fn viewport_validate(

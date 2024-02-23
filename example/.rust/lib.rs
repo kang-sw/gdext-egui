@@ -3,7 +3,7 @@ use std::sync::{
     Arc,
 };
 
-use gdext_egui::{egui, ViewportBuilder, ViewportId};
+use gdext_egui::{context::PanelGroup, egui, ViewportBuilder, ViewportId};
 use godot::{
     engine::{self, CanvasLayer, ICanvasLayer},
     prelude::*,
@@ -13,7 +13,9 @@ struct MyExtension;
 #[gdextension]
 unsafe impl ExtensionLibrary for MyExtension {}
 
-/* ------------------------------------------ Showcase ------------------------------------------ */
+/* ---------------------------------------------------------------------------------------------- */
+/*                                            SHOWCASE                                            */
+/* ---------------------------------------------------------------------------------------------- */
 
 #[derive(GodotClass)]
 #[class(init, base=Node)]
@@ -29,6 +31,12 @@ struct Showcase {
 
 #[godot_api]
 impl INode for Showcase {
+    fn process(&mut self, _d: f64) {
+        // Actually this is all you need.
+        let ctx = self.egui.bind().current_frame().clone();
+        self.demos.ui(&ctx);
+    }
+
     fn ready(&mut self) {
         self.egui.init(gdext_egui::EguiBridge::new_alloc());
 
@@ -36,12 +44,18 @@ impl INode for Showcase {
         gd_self.add_child(self.egui.clone().upcast());
         self.egui.set_owner(gd_self.upcast());
 
+        // Let all subwindow has native representation.
         self.base()
             .get_viewport()
             .unwrap()
             .set_embedding_subwindows(false);
 
-        self.egui.bind_mut().viewport_spawn(
+        /* ---------------------------------- Spawning Examples --------------------------------- */
+
+        let egui = self.egui.bind();
+
+        // You can spawn viewport
+        egui.viewport_spawn(
             ViewportId::from_hash_of(31),
             ViewportBuilder::default().with_title("Demo Viewport"),
             {
@@ -51,19 +65,49 @@ impl INode for Showcase {
                         demo.ui(ui);
                     });
 
-                    true
+                    // Within callback:
+                    // - Return () => Disposed when the viewport window is closed.
+                    // - Return true => Keep the viewport window open.
+                    // - Return false => Dispose the viewport window immediately.
                 }
             },
         );
-    }
 
-    fn process(&mut self, _d: f64) {
-        let ctx = self.egui.bind().current_frame().clone();
-        self.demos.ui(&ctx);
+        // Menu items can be spawned
+        egui.menu_item_spawn(["Menu Example"], {
+            let mut hidden = false;
+            move |ui| {
+                if ui.button("Click to Hide Me!").clicked() {
+                    hidden = !hidden;
+                }
+
+                !hidden
+            }
+        });
+
+        // There are several pre-defined panels in EguiBridge. Unless you use this
+        // functionality, they don't affect any of your EGUI context. These are useful
+        // when you don't want to write any *central* context your own which manages the
+        // layout and appearance of the individual UI items.
+        let spawn_group_item = |group: PanelGroup, index: i32| {
+            egui.panel_item_spawn(group, index, move |ui| {
+                ui.label(format!("{:?} Panel: {}", group, index));
+            });
+        };
+
+        spawn_group_item(PanelGroup::Left, 0);
+        spawn_group_item(PanelGroup::Left, 1);
+        spawn_group_item(PanelGroup::Right, 0);
+        spawn_group_item(PanelGroup::Right, 1);
+        spawn_group_item(PanelGroup::Central, -1);
+        spawn_group_item(PanelGroup::Central, 3);
+        spawn_group_item(PanelGroup::Central, 2);
     }
 }
 
-/* --------------------------------------- Tool Mode Test --------------------------------------- */
+/* ---------------------------------------------------------------------------------------------- */
+/*                                            TOOL TEST                                           */
+/* ---------------------------------------------------------------------------------------------- */
 
 /// With this node, as soon as you open the scene that this node is included, it'll start
 /// showing the UI.
