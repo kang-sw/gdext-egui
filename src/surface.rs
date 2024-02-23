@@ -85,7 +85,7 @@ impl TextureLibrary {
             tex.gd_src_img
                 .blit_rect(src_image, Rect2i::new(Vector2i::ZERO, src_size), dst_pos);
         } else {
-            godot_print!("Adding Texture: {id:?}");
+            godot_print!("Resetting Texture: {id:?}");
 
             let Some(gd_tex) = engine::ImageTexture::create_from_image(src_image.clone()) else {
                 godot_error!("Failed to create texture from image!");
@@ -364,13 +364,13 @@ impl EguiViewportBridge {
 
                 let event = key_to_egui(key).map(|key| egui::Event::Key {
                     key,
-                    physical_key: key_to_egui(dbg!(event.get_keycode())),
+                    physical_key: key_to_egui(event.get_keycode()),
                     pressed: event.is_pressed(),
                     repeat: event.is_echo(),
                     modifiers,
                 });
 
-                if let Some(event) = dbg!(event) {
+                if let Some(event) = event {
                     self.on_event(event);
                 }
 
@@ -475,6 +475,8 @@ impl EguiViewportBridge {
 
             let clip = primitive.clip_rect;
             gd_rs.canvas_item_set_clip(rid_item, true);
+
+            // FIXME: Clipping doesn't work at all?
             gd_rs
                 .canvas_item_set_custom_rect_ex(rid_item, true)
                 .rect(clip.to_counterpart())

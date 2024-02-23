@@ -67,26 +67,8 @@ pub struct EguiBridge {
     /// Determines the cursor shape of this frame.
     cursor_shape: RefCell<Option<egui::CursorIcon>>,
 
-    /// List of widgets
-    widgets: RefCell<BTreeMap<(PanelGroup, i32), PanelItem>>,
-
-    /// List of widgets, which is spawned this frame's rendering phase.
-    widgets_new: RefCell<Vec<NewWidgetItem>>,
-
-    /// List of menus
-    widget_menu_items: RefCell<MenuNode>,
-
-    // #[export]
-    // #[var(get, set)]
-    pub hide_spawned_widgets: bool,
-
-    // #[export]
-    // #[var(get, set)]
-    pub hide_spawned_viewports: bool,
-
-    // #[export]
-    // #[var(get, set)]
-    pub show_console: bool,
+    /// widget context
+    pub widget: SpawnedWidgetContext,
 }
 
 #[derive(Clone)]
@@ -156,12 +138,6 @@ struct ViewportContext {
 
     /// Cached viewport information, that we're currently updating on.
     info: egui::ViewportInfo,
-}
-
-#[derive(Default)]
-struct MenuNode {
-    children: BTreeMap<String, MenuNode>,
-    draw: Option<Box<FnShowWidget>>,
 }
 
 /// Closing steps

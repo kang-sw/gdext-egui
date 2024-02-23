@@ -81,3 +81,4 @@ Start Godot 4.2.1 at [`example/`](example/) directory, giving first argument [`S
 - Editor Plugin is still under development.
 - Few input bugs.
 - IME support is sub-optimal.
+- Zoom factor doesn't scale UIs ...

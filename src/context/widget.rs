@@ -1,6 +1,8 @@
 //! Widget related APIs. Detached due to verbosity.
 
 use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
@@ -243,7 +245,7 @@ impl EguiBridge {
         T: Into<String>,
         L: Into<WidgetRetain>,
     {
-        let mut node = &mut *self.widget_menu_items.borrow_mut();
+        let mut node = &mut *self.widget.menu_items.borrow_mut();
         for seg in path {
             let seg = seg.into();
             node = node.children.entry(seg).or_default();
@@ -294,7 +296,10 @@ impl EguiBridge {
         L: Into<WidgetRetain>,
     {
         let show = Box::new(move |ui: &mut _| widget(ui).into());
-        self.widgets_new.borrow_mut().push(((panel, slot), show));
+        self.widget
+            .items_new
+            .borrow_mut()
+            .push(((panel, slot), show));
     }
 }
 
@@ -308,14 +313,15 @@ impl EguiBridge {
     pub(super) fn _finish_frame_render_spawned_panels(&self) {
         // Apply widget patches right before rendering.
         let ctx = &self.share.egui;
-        let widgets = &mut *self.widgets.borrow_mut();
+        let widgets = &mut *self.widget.items.borrow_mut();
+        let w = &self.widget;
 
         const APPEND_SLOT_LOWER: i32 = i32::MAX >> 1;
         const PREPEND_SLOT_UPPER: i32 = i32::MIN >> 1;
 
         /* --------------------------------- New Slot Allocation -------------------------------- */
 
-        for ((group, slot), draw) in self.widgets_new.borrow_mut().drain(..) {
+        for ((group, slot), draw) in self.widget.items_new.borrow_mut().drain(..) {
             let slot_index = match slot {
                 NewWidgetSlot::Specified(idx) => idx,
                 NewWidgetSlot::Append => {
@@ -360,33 +366,35 @@ impl EguiBridge {
         let mut disposed = Vec::new();
 
         macro_rules! draw_group {
+            (#[plain], $ui:expr, $panel:expr) => {{
+                for (index, item) in widgets.range_mut($panel.range()) {
+                    let retain = (item.draw)($ui);
+
+                    if retain == WidgetRetain::Dispose {
+                        disposed.push(*index);
+                    }
+                }
+            }};
+
             ($ui:expr, $panel:expr) => {{
                 egui::ScrollArea::new([true, true])
                     .id_source(stringify!($panel))
                     .show($ui, |ui| {
-                        for (index, item) in widgets.range_mut($panel.range()) {
-                            let retain = (item.draw)(ui);
-
-                            if retain == WidgetRetain::Dispose {
-                                disposed.push(*index);
-                            }
-                        }
+                        draw_group!(#[plain], ui, $panel);
                     });
             }};
         }
-
-        egui::debug_text::print(ctx, "WTF");
 
         // Draw transparent frame to fill the empty space.
         let transparent = egui::Frame::default().fill(egui::Color32::from_black_alpha(0));
         let opaque = egui::Frame::default().fill(egui::Color32::from_black_alpha(71));
 
         // Draw bottom side of panels first; let top side expand as much as possible.
-        if has_bottom {
-            egui::TopBottomPanel::bottom("%%EguiBridge%%PanelBottom")
-                .frame(opaque)
-                .resizable(true)
-                .show(ctx, |ui| match (has_bottom_left, has_bottom_right) {
+        egui::TopBottomPanel::bottom("%%EguiBridge%%PanelBottom")
+            .frame(opaque)
+            .resizable(true)
+            .show_animated(ctx, has_bottom && !w.hide_bottom.get(), |ui| {
+                match (has_bottom_left, has_bottom_right) {
                     (true, true) => {
                         ui.columns(2, |col| {
                             draw_group!(&mut col[0], PanelGroup::BottomLeft);
@@ -396,37 +404,60 @@ impl EguiBridge {
                     (true, false) => draw_group!(ui, PanelGroup::BottomLeft),
                     (false, true) => draw_group!(ui, PanelGroup::BottomRight),
                     (false, false) => unreachable!(),
-                });
-        }
+                }
+            });
 
         if has_top {
-            if has_left {
-                egui::SidePanel::left("%%EguiBridge%%PanelLeft")
-                    .frame(opaque)
-                    .show(ctx, |ui| draw_group!(ui, PanelGroup::Left));
-            }
+            egui::SidePanel::left("%%EguiBridge%%PanelLeft")
+                .frame(opaque)
+                .show_animated(ctx, has_left && !w.hide_left.get(), |ui| {
+                    draw_group!(ui, PanelGroup::Left)
+                });
 
-            if has_right {
-                egui::SidePanel::right("%%EguiBridge%%PanelRight")
-                    .frame(opaque)
-                    .show(ctx, |ui| draw_group!(ui, PanelGroup::Right));
-            }
+            egui::SidePanel::right("%%EguiBridge%%PanelRight")
+                .frame(opaque)
+                .show_animated(ctx, has_right && !w.hide_right.get(), |ui| {
+                    draw_group!(ui, PanelGroup::Right)
+                });
 
-            if has_center {
+            if has_center && !w.hide_center.get() {
                 // To allow clicks on the empty space, here we create window with
                 // transparent frame.
-
-                egui::Window::new("%%EguiBridge%%PanelCentral")
-                    .movable(false)
-                    .auto_sized()
-                    .max_height(ctx.available_rect().size().y)
-                    .anchor(egui::Align2::LEFT_TOP, egui::Vec2::ZERO)
-                    .frame(transparent)
+                egui::Window::new("%%EguiBridge%%PanelCenter")
                     .title_bar(false)
+                    .constrain_to(ctx.available_rect())
+                    .frame(transparent)
+                    .auto_sized()
+                    .anchor(egui::Align2::LEFT_TOP, [0., 0.])
                     .show(ctx, |ui| {
                         draw_group!(ui, PanelGroup::Central);
                     });
             }
+        }
+
+        if has_top || has_bottom {
+            // Popup visibility control display
+            egui::Window::new("Visibility")
+                .id("%%EguiBridge%%Visibility".into())
+                .title_bar(false)
+                .auto_sized()
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let w = &self.widget;
+                        [
+                            (&w.hide_center, "Center"),
+                            (&w.hide_left, "Left"),
+                            (&w.hide_right, "Right"),
+                            (&w.hide_bottom, "Bottom"),
+                        ]
+                        .into_iter()
+                        .for_each(|(hide, label)| {
+                            let mut hidden = !hide.get();
+                            ui.checkbox(&mut hidden, label);
+                            hide.set(!hidden);
+                        });
+                    })
+                });
         }
 
         // Gc removed entries.
@@ -442,19 +473,46 @@ impl EguiBridge {
 
 /* ------------------------------------- Widget Creation ------------------------------------ */
 
+#[derive(Default)]
+pub struct SpawnedWidgetContext {
+    /// List of widgets
+    items: RefCell<BTreeMap<(PanelGroup, i32), PanelItem>>,
+
+    /// List of widgets, which is spawned this frame's rendering phase.
+    items_new: RefCell<Vec<NewWidgetItem>>,
+
+    /// List of menus
+    menu_items: RefCell<MenuNode>,
+
+    // #[export]
+    // #[var(get, set)]
+    pub hide_all: Cell<bool>,
+
+    pub hide_left: Cell<bool>,
+    pub hide_right: Cell<bool>,
+    pub hide_center: Cell<bool>,
+    pub hide_bottom: Cell<bool>,
+}
+
 /// Type alias for widget declaration
-pub(super) type NewWidgetItem = ((PanelGroup, NewWidgetSlot), Box<FnShowWidget>);
+type NewWidgetItem = ((PanelGroup, NewWidgetSlot), Box<FnShowWidget>);
 
 /// Callback for showing spawned widget.
-pub(super) type FnShowWidget = dyn FnMut(&mut egui::Ui) -> WidgetRetain + 'static;
+type FnShowWidget = dyn FnMut(&mut egui::Ui) -> WidgetRetain + 'static;
 
-pub(super) enum NewWidgetSlot {
+enum NewWidgetSlot {
     Specified(i32),
     Append,
     Prepend,
 }
 
 /// Widget declaration & context
-pub(super) struct PanelItem {
+struct PanelItem {
     draw: Box<FnShowWidget>,
+}
+
+#[derive(Default)]
+struct MenuNode {
+    children: BTreeMap<String, MenuNode>,
+    draw: Option<Box<FnShowWidget>>,
 }
