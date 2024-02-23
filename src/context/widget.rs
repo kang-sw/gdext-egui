@@ -371,46 +371,54 @@ impl EguiBridge {
             };
         }
 
+        // Draw transparent frame to fill the empty space.
+        let transparent = egui::Frame::default().fill(egui::Color32::from_black_alpha(0));
+        let opaque = egui::Frame::default().fill(egui::Color32::from_black_alpha(71));
+
         // Draw bottom side of panels first; let top side expand as much as possible.
         if has_bottom {
-            egui::TopBottomPanel::bottom("%%EguiBridge%%PanelBottom").show(ctx, |ui| {
-                match (has_bottom_left, has_bottom_right) {
+            egui::TopBottomPanel::bottom("%%EguiBridge%%PanelBottom")
+                .frame(opaque)
+                .show(ctx, |ui| match (has_bottom_left, has_bottom_right) {
                     (true, true) => {
-                        egui::SidePanel::left("%%EguiBridge%%PanelBottomLeft")
-                            .show_inside(ui, |ui| draw_group!(ui, PanelGroup::BottomLeft));
-                        egui::CentralPanel::default()
-                            .show_inside(ui, |ui| draw_group!(ui, PanelGroup::Central));
+                        ui.columns(2, |col| {
+                            draw_group!(&mut col[0], PanelGroup::BottomLeft);
+                            draw_group!(&mut col[1], PanelGroup::BottomRight);
+                        });
                     }
                     (true, false) => draw_group!(ui, PanelGroup::BottomLeft),
                     (false, true) => draw_group!(ui, PanelGroup::BottomRight),
                     (false, false) => unreachable!(),
-                }
-            });
+                });
         }
 
         if has_top {
-            // Draw transparent frame to fill the empty space.
-            let transparent = egui::Frame::default().fill(egui::Color32::from_black_alpha(0));
+            if has_left {
+                egui::SidePanel::left("%%EguiBridge%%PanelLeft")
+                    .frame(opaque)
+                    .show(ctx, |ui| draw_group!(ui, PanelGroup::Left));
+            }
 
-            egui::CentralPanel::default()
-                .frame(transparent)
-                .show(ctx, |ui| {
-                    if has_left {
-                        egui::SidePanel::left("%%EguiBridge%%PanelLeft")
-                            .show_inside(ui, |ui| draw_group!(ui, PanelGroup::Left));
-                    }
+            if has_right {
+                egui::SidePanel::right("%%EguiBridge%%PanelRight")
+                    .frame(opaque)
+                    .show(ctx, |ui| draw_group!(ui, PanelGroup::Right));
+            }
 
-                    if has_right {
-                        egui::SidePanel::right("%%EguiBridge%%PanelRight")
-                            .show_inside(ui, |ui| draw_group!(ui, PanelGroup::Right));
-                    }
+            if has_center {
+                // To allow clicks on the empty space, here we create window with
+                // transparent frame.
 
-                    if has_center {
-                        egui::CentralPanel::default()
-                            .frame(transparent)
-                            .show_inside(ui, |ui| draw_group!(ui, PanelGroup::Central));
-                    }
-                });
+                egui::Window::new("%%EguiBridge%%PanelCentral")
+                    .movable(false)
+                    .auto_sized()
+                    .anchor(egui::Align2::LEFT_TOP, egui::Vec2::ZERO)
+                    .frame(transparent)
+                    .title_bar(false)
+                    .show(ctx, |ui| {
+                        draw_group!(ui, PanelGroup::Central);
+                    });
+            }
         }
 
         // Gc removed entries.

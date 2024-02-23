@@ -140,7 +140,7 @@ impl INode for WidgetExample {
         // layout and appearance of the individual UI items.
         let spawn_group_item = |group: PanelGroup, index: i32| {
             egui.panel_item_insert(group, index, move |ui| {
-                ui.label(format!("{:?} Panel: {}", group, index));
+                !ui.button(format!("{:?} Panel: {}", group, index)).clicked()
             });
         };
 

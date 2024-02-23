@@ -1,5 +1,39 @@
-[gd_scene format=3 uid="uid://c85sf1aw3b6l8"]
+[gd_scene load_steps=2 format=3 uid="uid://c85sf1aw3b6l8"]
+
+[sub_resource type="GDScript" id="GDScript_wmn7q"]
+script/source = "extends Button
+
+
+# Called when the node enters the scene tree for the first time.
+func _ready() -> void:
+	pass # Replace with function body.
+
+
+# Called every frame. 'delta' is the elapsed time since the previous frame.
+func _process(delta: float) -> void:
+	pass
+
+func _on_pressed() -> void:
+	print(\"Clicked!\")
+	pass # Replace with function body.
+"
 
 [node name="SpawnTest" type="Node"]
 
 [node name="WidgetExample" type="WidgetExample" parent="."]
+
+[node name="Button" type="Button" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = SubResource("GDScript_wmn7q")
+
+[node name="TextEdit" type="TextEdit" parent="Button"]
+offset_left = 315.0
+offset_top = 135.0
+offset_right = 784.0
+offset_bottom = 410.0
+
+[connection signal="pressed" from="Button" to="Button" method="_on_pressed"]

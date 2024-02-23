@@ -455,19 +455,18 @@ impl EguiBridge {
         // Start root frame as normal.
         self.viewport_validate(egui::ViewportId::ROOT, None);
         self.viewport_start_frame(egui::ViewportId::ROOT);
+
+        // NOTE: Implementation is too long, thus splitting it into another function.
+
+        // Handle spawned widgets most first; as it should not be affected by any other controls!
+        self._finish_frame_render_spawned_main_menu();
+        self._finish_frame_render_spawned_panels();
     }
 
     fn finish_frame(&mut self) {
         let share = self.share.clone();
 
         /* ------------------------- Spawned Widget / Viewport Handling ------------------------- */
-
-        // Implementation is too long, thus splitting it into another function.
-        //
-        // This call order (main menu -> panels) should be preserved to ensure that
-        // menubar is rendered topmost of the window correctly!
-        self._finish_frame_render_spawned_main_menu();
-        self._finish_frame_render_spawned_panels();
 
         let viewports = take(&mut *share.spawned_viewports.lock()).tap_mut(|viewports| {
             // Check if any of the spawned viewports should be disposed.
