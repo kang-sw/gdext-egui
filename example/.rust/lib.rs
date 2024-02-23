@@ -1,15 +1,9 @@
-use std::{
-    sync::{
-        atomic::{AtomicUsize, Ordering::Relaxed},
-        Arc,
-    },
-    time::Duration,
+use std::sync::{
+    atomic::{AtomicUsize, Ordering::Relaxed},
+    Arc,
 };
 
-use gdext_egui::{
-    context::{FnEguiDrawExt, PanelGroup},
-    egui, ViewportBuilder, ViewportId,
-};
+use gdext_egui::{context::PanelGroup, egui, ViewportBuilder, ViewportId};
 use godot::{
     engine::{self, CanvasLayer, ICanvasLayer},
     prelude::*,

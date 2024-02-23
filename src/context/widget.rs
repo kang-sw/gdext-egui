@@ -542,6 +542,7 @@ pub struct SpawnedWidgetContext {
     items_new: RefCell<Vec<NewWidgetItem>>,
 
     /// List of menus
+    #[allow(unused)]
     menu_root: RefCell<MenuNode>,
 
     // #[export]
@@ -571,6 +572,7 @@ struct PanelItem {
     draw: Box<FnShowWidget>,
 }
 
+#[allow(unused)]
 #[derive(Default)]
 struct MenuNode {
     children: BTreeMap<String, MenuNode>,
