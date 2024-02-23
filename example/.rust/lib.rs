@@ -1,9 +1,15 @@
-use std::sync::{
-    atomic::{AtomicUsize, Ordering::Relaxed},
-    Arc,
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering::Relaxed},
+        Arc,
+    },
+    time::Duration,
 };
 
-use gdext_egui::{context::PanelGroup, egui, ViewportBuilder, ViewportId};
+use gdext_egui::{
+    context::{FnEguiDrawExt, PanelGroup},
+    egui, ViewportBuilder, ViewportId,
+};
 use godot::{
     engine::{self, CanvasLayer, ICanvasLayer},
     prelude::*,
@@ -35,6 +41,38 @@ impl INode for Showcase {
         // Actually this is all you need.
         let ctx = self.egui.bind().current_frame().clone();
         self.demos.ui(&ctx);
+    }
+
+    fn ready(&mut self) {
+        self.egui.init(gdext_egui::EguiBridge::new_alloc());
+
+        // `EguiBridge` MUST be registered in scene tree to work properly!
+        let mut gd_self = self.to_gd();
+        gd_self.add_child(self.egui.clone().upcast());
+        self.egui.set_owner(gd_self.upcast());
+    }
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                      SHOWCASE FOR WIDGETS                                      */
+/* ---------------------------------------------------------------------------------------------- */
+
+#[derive(GodotClass)]
+#[class(init, base=Node)]
+struct WidgetExample {
+    base: Base<Node>,
+
+    /// This should be set from editor
+    #[init(default = OnReady::manual())]
+    egui: OnReady<Gd<gdext_egui::EguiBridge>>,
+}
+
+#[godot_api]
+impl INode for WidgetExample {
+    fn process(&mut self, _d: f64) {
+        // To start new frame ... Registered widgets won't be updated unless you call
+        // this. (at least once in a frame)
+        self.egui.bind().current_frame();
     }
 
     fn ready(&mut self) {
@@ -85,6 +123,17 @@ impl INode for Showcase {
             }
         });
 
+        // You can add decorations to the UI callbacks.
+        egui.menu_item_insert(
+            ["Hidden In 5 Seconds ..."],
+            {
+                |ui: &mut egui::Ui| {
+                    ui.label("Suprise!");
+                }
+            }
+            .lifespan(Duration::from_secs(5)),
+        );
+
         // There are several pre-defined panels in EguiBridge. Unless you use this
         // functionality, they don't affect any of your EGUI context. These are useful
         // when you don't want to write any *central* context your own which manages the
@@ -102,6 +151,11 @@ impl INode for Showcase {
         spawn_group_item(PanelGroup::Central, -1);
         spawn_group_item(PanelGroup::Central, 3);
         spawn_group_item(PanelGroup::Central, 2);
+        spawn_group_item(PanelGroup::BottomLeft, 2);
+        spawn_group_item(PanelGroup::BottomLeft, 1);
+        spawn_group_item(PanelGroup::BottomRight, 2);
+        spawn_group_item(PanelGroup::BottomRight, 3);
+        spawn_group_item(PanelGroup::BottomRight, 6);
     }
 }
 
