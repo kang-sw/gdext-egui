@@ -144,18 +144,20 @@ impl INode for WidgetExample {
             });
         };
 
-        spawn_group_item(PanelGroup::Left, 0);
-        spawn_group_item(PanelGroup::Left, 1);
-        spawn_group_item(PanelGroup::Right, 0);
-        spawn_group_item(PanelGroup::Right, 1);
-        spawn_group_item(PanelGroup::Central, -1);
-        spawn_group_item(PanelGroup::Central, 3);
-        spawn_group_item(PanelGroup::Central, 2);
-        spawn_group_item(PanelGroup::BottomLeft, 2);
-        spawn_group_item(PanelGroup::BottomLeft, 1);
-        spawn_group_item(PanelGroup::BottomRight, 2);
-        spawn_group_item(PanelGroup::BottomRight, 3);
-        spawn_group_item(PanelGroup::BottomRight, 6);
+        for offset in 0..100 {
+            spawn_group_item(PanelGroup::Left, -2 + offset);
+            spawn_group_item(PanelGroup::Left, 1 + offset);
+            spawn_group_item(PanelGroup::Right, -1 + offset);
+            spawn_group_item(PanelGroup::Right, 1 + offset);
+            spawn_group_item(PanelGroup::Central, -1 + offset);
+            spawn_group_item(PanelGroup::Central, 3 + offset);
+            spawn_group_item(PanelGroup::Central, 2 + offset);
+            spawn_group_item(PanelGroup::BottomLeft, 2 + offset);
+            spawn_group_item(PanelGroup::BottomLeft, 1 + offset);
+            spawn_group_item(PanelGroup::BottomRight, 2 + offset);
+            spawn_group_item(PanelGroup::BottomRight, 3 + offset);
+            spawn_group_item(PanelGroup::BottomRight, 6 + offset);
+        }
     }
 }
 

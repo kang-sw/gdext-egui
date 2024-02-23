@@ -360,16 +360,22 @@ impl EguiBridge {
         let mut disposed = Vec::new();
 
         macro_rules! draw_group {
-            ($ui:expr, $panel:expr) => {
-                for (index, item) in widgets.range_mut($panel.range()) {
-                    let retain = (item.draw)($ui);
+            ($ui:expr, $panel:expr) => {{
+                egui::ScrollArea::new([true, true])
+                    .id_source(stringify!($panel))
+                    .show($ui, |ui| {
+                        for (index, item) in widgets.range_mut($panel.range()) {
+                            let retain = (item.draw)(ui);
 
-                    if retain == WidgetRetain::Dispose {
-                        disposed.push(*index);
-                    }
-                }
-            };
+                            if retain == WidgetRetain::Dispose {
+                                disposed.push(*index);
+                            }
+                        }
+                    });
+            }};
         }
+
+        egui::debug_text::print(ctx, "WTF");
 
         // Draw transparent frame to fill the empty space.
         let transparent = egui::Frame::default().fill(egui::Color32::from_black_alpha(0));
@@ -379,6 +385,7 @@ impl EguiBridge {
         if has_bottom {
             egui::TopBottomPanel::bottom("%%EguiBridge%%PanelBottom")
                 .frame(opaque)
+                .resizable(true)
                 .show(ctx, |ui| match (has_bottom_left, has_bottom_right) {
                     (true, true) => {
                         ui.columns(2, |col| {
@@ -412,6 +419,7 @@ impl EguiBridge {
                 egui::Window::new("%%EguiBridge%%PanelCentral")
                     .movable(false)
                     .auto_sized()
+                    .max_height(ctx.available_rect().size().y)
                     .anchor(egui::Align2::LEFT_TOP, egui::Vec2::ZERO)
                     .frame(transparent)
                     .title_bar(false)
