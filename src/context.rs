@@ -496,6 +496,9 @@ impl EguiBridge {
 
         // Register immediate renderer for this frame.
         let w_self = utilities::weakref(self.to_gd().to_variant());
+
+        // TODO: Make this not to capture anything; instead let it retrieve required data
+        // from `ctx`
         egui::Context::set_immediate_viewport_renderer(move |ctx, viewport| {
             let Ok(this) = w_self.try_to::<Gd<WeakRef>>() else {
                 unreachable!();
@@ -600,14 +603,6 @@ impl EguiBridge {
                 // No need to sync
                 break 'sync;
             }
-
-            let ui_scale = self
-                .share
-                .viewports
-                .lock()
-                .get(&ViewportId::ROOT)
-                .unwrap()
-                .target_ui_scale;
 
             // Sync root region
             root.painter.set_global_position(target_rect.position);
