@@ -16,10 +16,6 @@ pub extern crate egui;
 pub use context::EguiBridge;
 pub use egui::{ViewportBuilder, ViewportId};
 
-fn default<T: Default>() -> T {
-    T::default()
-}
-
 pub mod helpers {
     use godot::prelude::*;
 
@@ -110,5 +106,32 @@ pub mod helpers {
         fn to_alternative(&self) -> Self::Alternative {
             Rect2i::new(self.min.to_alternative(), self.max.to_alternative())
         }
+    }
+}
+
+fn default<T: Default>() -> T {
+    T::default()
+}
+
+/* ------------------------------------------ DnD Util ------------------------------------------ */
+
+/// A wrapper around `godot::prelude::Variant` that forcibly implements `Send` and `Sync`.
+///
+/// This is the primary `Payload` type for [`egui::DragAndDrop`] utility. This is not
+/// intended to use carry 'heavy' data, but rather to carry references to the data which
+/// is relatively cheap to clone.
+#[derive(Debug, Clone)]
+pub struct DragAndDropVariant(godot::prelude::Variant);
+
+unsafe impl Send for DragAndDropVariant {}
+unsafe impl Sync for DragAndDropVariant {}
+
+impl DragAndDropVariant {
+    pub fn new(variant: godot::prelude::Variant) -> Self {
+        Self(variant)
+    }
+
+    pub fn into_inner(self) -> godot::prelude::Variant {
+        self.0
     }
 }

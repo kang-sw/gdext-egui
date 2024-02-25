@@ -54,11 +54,10 @@ impl INode for Showcase {
 }
 ```
 
-# Run Example
+# Unsafety
 
-Start Godot 4.2.1 at [`example/`](example/) directory, giving first argument [`Showcase.tscn`](example/Showcase.tscn)
-
-> Before doing this, you must compile the rust gdextension library first!
+Bunch of unsafe blocks are used to implement `drag and drop` scheme between egui and godot
+native ui. Generally it is considered safe since both of godot native and 
 
 # Features
 

@@ -1,4 +1,4 @@
-use egui::ahash::HashMap;
+use egui::{ahash::HashMap, DragAndDrop};
 use godot::{
     engine::{
         self,
@@ -13,7 +13,7 @@ use godot::{
 use itertools::multizip;
 use tap::prelude::Tap;
 
-use crate::helpers::ToCounterpart;
+use crate::{helpers::ToCounterpart, DragAndDropVariant};
 
 /* ----------------------------------------- Texture Lib ---------------------------------------- */
 
@@ -109,6 +109,11 @@ impl TextureLibrary {
         };
     }
 
+    pub fn clear(&mut self) {
+        // RefCounted object doesn't need to be freed manually.
+        self.textures.clear();
+    }
+
     fn get(&self, id: &egui::TextureId) -> Option<Gd<ImageTexture>> {
         self.textures.get(id).map(|x| x.gd_tex.clone())
     }
@@ -118,7 +123,7 @@ impl TextureLibrary {
 
 /// Represents a spawned viewport
 #[derive(GodotClass)]
-#[class(base=Control, init, hidden, rename=INTERNAL__GodotEguiViewportBridge)]
+#[class(base=Control, tool, init, hidden, rename=INTERNAL__GodotEguiViewportBridge)]
 pub(crate) struct EguiViewportBridge {
     base: Base<Control>,
 
@@ -136,19 +141,36 @@ pub(crate) struct EguiViewportBridge {
     ui_scale_cache: f32,
 }
 
-impl Drop for EguiViewportBridge {
-    fn drop(&mut self) {
-        // Do not leak resources
-        let mut gd_rs = RenderingServer::singleton();
-
-        for rid in self.canvas_items.drain(..) {
-            gd_rs.free_rid(rid);
-        }
-    }
-}
-
 #[godot_api]
 impl IControl for EguiViewportBridge {
+    fn can_drop_data(&self, at_position: Vector2, data: Variant) -> bool {
+        // We just take any type of data once dropped. Also, we don't need to check the
+        // dropped position for now, it is currently tracked by egui context, and returns
+        // whether the control is owned by EGUI or not, by checking if the context
+        // requires pointer input.
+        let _ = (at_position, data);
+
+        self.context
+            .as_ref()
+            .is_some_and(|c| c.wants_pointer_input())
+    }
+
+    fn drop_data(&mut self, at_position: Vector2, data: Variant) {
+        let _ = at_position; // Don't care about the position for now.
+
+        let ctx = self.context.as_ref().expect("can_drop_data -> drop_data");
+        DragAndDrop::set_payload(ctx, DragAndDropVariant(data));
+    }
+
+    fn get_drag_data(&mut self, _at_position: Vector2) -> Variant {
+        // TODO: should handle either of these cases:
+        // - `egui drag` -> `godot drop`
+        // - `egui drag` -> `egui drop`
+
+        // TODO: Use `Control::force_drag` method
+        Variant::nil()
+    }
+
     fn ready(&mut self) {
         self.base_mut().tap_mut(|b| {
             // Makes node to fill the whole available space
@@ -157,6 +179,15 @@ impl IControl for EguiViewportBridge {
             // Make this node to be focusable
             b.set_focus_mode(FocusMode::CLICK);
         });
+    }
+
+    fn exit_tree(&mut self) {
+        // Don't make it leak resource.
+        let mut gd_rs = RenderingServer::singleton();
+
+        for rid in self.canvas_items.drain(..) {
+            gd_rs.free_rid(rid);
+        }
     }
 
     fn on_notification(&mut self, what: ControlNotification) {

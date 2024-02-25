@@ -32,7 +32,7 @@ use crate::{default, helpers::ToCounterpart, surface};
 
 /// Primary Egui Interface.
 #[derive(GodotClass)]
-#[class(base=CanvasLayer, init, rename=GodotEguiBridge)]
+#[class(base=CanvasLayer, tool, init, rename=GodotEguiBridge)]
 pub struct EguiBridge {
     base: Base<CanvasLayer>,
     share: Arc<SharedContext>,
@@ -213,6 +213,18 @@ impl ICanvasLayer for EguiBridge {
     fn process(&mut self, _dt: f64) {
         if self.share.is_in_frame() {
             self.finish_frame();
+        }
+    }
+
+    fn exit_tree(&mut self) {
+        // Cleanup all godot resources
+        self.textures.clear();
+
+        self.share.viewports.lock().clear();
+        self.share.spawned_viewports.lock().clear();
+
+        for (_, surface) in self.surfaces.borrow_mut().drain() {
+            Self::free_surface(Some(surface));
         }
     }
 }
@@ -826,6 +838,10 @@ impl EguiBridge {
                 Callable::from_fn("Resize", move |_| {
                     // Deadlock workaround
                     let ctx = ctx.clone();
+
+                    // FIXME: Change to use dedicated tesselation thread.
+                    // - This simply blocks a rayon worker thread waiting for internal
+                    //   lock, which is obviously undesirable.
                     rayon::spawn(move || ctx.request_repaint_of(id));
 
                     Ok(Variant::nil())

@@ -1,6 +1,0 @@
-[gd_scene format=3 uid="uid://deuegnbl782uq"]
-
-[node name="ToolTest" type="ToolTest" node_paths=PackedStringArray("egui")]
-egui = NodePath("GodotEguiBridge")
-
-[node name="GodotEguiBridge" type="GodotEguiBridge" parent="."]
