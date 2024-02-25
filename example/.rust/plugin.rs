@@ -28,6 +28,8 @@ impl IEditorPlugin for TestEguiPlugin {
         edt.get_editor_main_screen()
             .unwrap()
             .add_child(egui.clone().upcast());
+
+        self.make_visible(false);
     }
 
     fn exit_tree(&mut self) {
@@ -42,6 +44,14 @@ impl IEditorPlugin for TestEguiPlugin {
 
     fn get_plugin_name(&self) -> GString {
         "Test Egui Plugin".into()
+    }
+
+    fn make_visible(&mut self, value: bool) {
+        let Some(egui) = self.egui.as_mut() else {
+            return;
+        };
+
+        egui.set_visible(value);
     }
 
     fn process(&mut self, _dt: f64) {
@@ -59,7 +69,7 @@ impl IEditorPlugin for TestEguiPlugin {
             ViewportId::from_hash_of("hoal"),
             ViewportBuilder::default().with_title("a-ha!"),
             |ctx, _| {
-                egui::Window::new("Hello World from Viewport").show(ctx, |ui| {
+                egui::CentralPanel::default().show(ctx, |ui| {
                     ui.label("Hello World!");
                 });
             },

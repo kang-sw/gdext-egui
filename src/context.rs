@@ -17,7 +17,8 @@ use egui::{
 };
 use godot::{
     engine::{
-        self, control::MouseFilter, window, CanvasLayer, DisplayServer, ICanvasLayer, WeakRef,
+        self, control::MouseFilter, window, CanvasLayer, Control, DisplayServer, ICanvasLayer,
+        WeakRef,
     },
     prelude::*,
 };
@@ -35,6 +36,8 @@ use crate::{default, helpers::ToCounterpart, surface};
 #[class(base=CanvasLayer, tool, init, rename=GodotEguiBridge)]
 pub struct EguiBridge {
     base: Base<CanvasLayer>,
+
+    /// Requires [`Arc`] for egui callback requirements.
     share: Arc<SharedContext>,
 
     /// Number of bits allowed for texture size.
@@ -68,6 +71,9 @@ pub struct EguiBridge {
 
     /// Handle to tesselation worker tx channel
     tx_bg_task: Option<mpsc::Sender<BackgroundWorkCommand>>,
+
+    /// non-send + non-sync
+    _non_send_sync: std::marker::PhantomData<*const ()>,
 }
 
 enum BackgroundWorkCommand {
@@ -85,7 +91,7 @@ struct SurfaceContext {
     /// Actual painter window.
     painter: Gd<surface::EguiViewportBridge>,
 
-    /// Container window if exist. (All widgets without root)
+    /// Container window if exist.
     window: Option<Gd<engine::Window>>,
 }
 
@@ -405,21 +411,29 @@ impl EguiBridge {
         &self,
         id: ViewportId,
         builder: ViewportBuilder,
-        show: impl FnMut(&egui::Context) -> L + 'static + Send + Sync,
+        show: impl FnMut(&egui::Context) -> L + 'static,
     ) where
         L: Into<WidgetRetain>,
     {
         // Spawn a viewport which is retained as long as show returns true.
         self.share.spawned_viewports.lock().pipe(|mut table| {
             let dispose = Arc::new(Mutex::new(WidgetRetain::default()));
-            let show_fn = Mutex::new(show);
+            let show_fn = FnWrapSendSync(show);
+            let show_fn = Mutex::new(show_fn);
+
+            struct FnWrapSendSync<F>(pub F);
+
+            // SAFETY: EguiBridge can't escape main thread
+            // + All viewport methods are invoked from main thread, and never touches
+            //   other thread.
+            unsafe impl<F> Send for FnWrapSendSync<F> {}
 
             table.insert(
                 id,
                 SpawnedViewportContext {
                     dispose: dispose.clone(),
                     repaint: Arc::new(move |ctx| {
-                        *dispose.lock() = show_fn.lock()(ctx).into();
+                        *dispose.lock() = show_fn.lock().0(ctx).into();
                     }),
                     builder,
                 },
@@ -430,10 +444,24 @@ impl EguiBridge {
         self.queue_try_start_frame();
     }
 
+    /// Spawn new viewport as child of existing node. If specified parent node is behind
+    /// other node, the input may work naturally as the egui surface always intercepts any
+    /// GUI input. It is advised to use this method for any node that lays over any other
+    /// GUI nodes, which makes all egui rendering appear always top of the other GUI
+    /// nodes.
+    pub fn viewport_spawn_as_child(
+        &self,
+        _id: ViewportId,
+        _parent: Gd<Control>,
+        _builder: ViewportBuilder,
+        _show: impl FnOnce(&egui::Context) -> WidgetRetain + 'static,
+    ) {
+    }
+
     /// Attach given node to given viewport's window.
     ///
     /// TODO: Implement this!
-    pub fn attach_to_viewport(&self, _id: ViewportId, node: Gd<Node>) -> Result<(), Gd<Node>> {
+    pub fn attach_node_to_viewport(&self, _id: ViewportId, node: Gd<Node>) -> Result<(), Gd<Node>> {
         Err(node)
     }
 }
