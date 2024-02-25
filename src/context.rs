@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{hash_map, HashSet, VecDeque},
     mem::take,
     sync::{
@@ -17,15 +17,20 @@ use egui::{
 };
 use godot::{
     engine::{
-        self, control::MouseFilter, window, CanvasLayer, Control, DisplayServer, ICanvasLayer,
-        WeakRef,
+        self,
+        control::{LayoutPreset, MouseFilter},
+        window, CanvasLayer, Control, DisplayServer, ICanvasLayer, WeakRef,
     },
     prelude::*,
 };
 use tap::prelude::{Pipe, Tap};
 use with_drop::with_drop;
 
-use crate::{default, helpers::ToCounterpart, surface};
+use crate::{
+    default,
+    helpers::{downgrade_gd, try_upgrade_gd, ToCounterpart},
+    surface,
+};
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                             BRIDGE                                             */
@@ -71,6 +76,9 @@ pub struct EguiBridge {
 
     /// Handle to tesselation worker tx channel
     tx_bg_task: Option<mpsc::Sender<BackgroundWorkCommand>>,
+
+    /// A object that root region is being synced.
+    root_region_sync: Cell<Option<Gd<WeakRef>>>,
 
     /// non-send + non-sync
     _non_send_sync: std::marker::PhantomData<*const ()>,
@@ -309,8 +317,6 @@ impl EguiBridge {
     fn __internal_try_start_frame_inner(&self) {
         self.try_start_frame();
     }
-
-    // TODO: Signal based API, when the `gdext` is ready for first-class signal APIs.
 }
 
 /* -------------------------------------------- APIs -------------------------------------------- */
@@ -327,6 +333,16 @@ impl EguiBridge {
             self.setup_scripts.borrow_mut().push(Box::new(setter));
         } else {
             setter(&self.share.egui);
+        }
+    }
+
+    /// Synchronize root viewport's region with given control. If [`None`] is given, it
+    /// unregisters synchronization.
+    pub fn sync_root_region(&self, target: Option<Gd<Control>>) {
+        if let Some(target) = target {
+            self.root_region_sync.set(Some(downgrade_gd(target)));
+        } else {
+            self.reset_root_region_sync();
         }
     }
 
@@ -466,6 +482,8 @@ impl EguiBridge {
     }
 }
 
+/* ------------------------------------------ Privates ------------------------------------------ */
+
 /// Private API implementations
 impl EguiBridge {
     fn try_start_frame(&self) {
@@ -551,12 +569,71 @@ impl EguiBridge {
 
         // Start root frame as normal.
         self.viewport_validate(egui::ViewportId::ROOT, None);
+
+        // After root region is initialized, try sync it with root region.
+        'sync: {
+            let Some(w_target) = self.root_region_sync.take() else {
+                break 'sync;
+            };
+
+            let Some(target) = try_upgrade_gd::<Control>(w_target.clone()) else {
+                self.reset_root_region_sync();
+                break 'sync;
+            };
+
+            // Target is still valid; return it back to the list.
+            self.root_region_sync.set(Some(w_target));
+
+            // Check if size mismatches
+            let mut surfaces = self.surfaces.borrow_mut();
+            let root = surfaces.get_mut(&ViewportId::ROOT).unwrap();
+
+            let target_rect = target.get_global_rect();
+            let root_rect = root.painter.get_global_rect();
+
+            let err_pos = target_rect.position - root_rect.position;
+            let err_size = target_rect.size - root_rect.size;
+
+            // We use error approximation here as the sync size is result of calculation
+            // => which may have floating point errors.
+            if err_pos.length_squared() < 1e-4 && err_size.length_squared() < 1e-4 {
+                // No need to sync
+                break 'sync;
+            }
+
+            let ui_scale = self
+                .share
+                .viewports
+                .lock()
+                .get(&ViewportId::ROOT)
+                .unwrap()
+                .target_ui_scale;
+
+            // Sync root region
+            root.painter.set_global_position(target_rect.position);
+            root.painter.set_size(target_rect.size);
+        }
+
         self.viewport_start_frame(egui::ViewportId::ROOT);
 
         // NOTE: Implementation is too long, thus splitting it into another function.
 
         // Handle spawned widgets most first; as it should not be affected by any other controls!
         // self._start_frame_handle_widgets();
+    }
+
+    fn reset_root_region_sync(&self) {
+        self.surfaces
+            .borrow_mut()
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .pipe(|x| {
+                x.painter
+                    .set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT)
+            });
+
+        // just to ensure.
+        self.root_region_sync.set(None);
     }
 
     fn finish_frame(&mut self) {

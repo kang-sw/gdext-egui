@@ -5,8 +5,8 @@ use godot::{
         control::{FocusMode, LayoutPreset},
         global::{self, KeyModifierMask},
         notify::ControlNotification,
-        Control, DisplayServer, IControl, ImageTexture, InputEventKey, InputEventMouseButton,
-        InputEventMouseMotion, RenderingServer,
+        Control, DisplayServer, IControl, ImageTexture, InputEventKey, InputEventMouse,
+        InputEventMouseButton, InputEventMouseMotion, RenderingServer,
     },
     prelude::*,
 };
@@ -246,13 +246,16 @@ impl EguiViewportBridge {
         };
 
         let ui_scale = self.ui_scale_cache;
+        let pos_offset = self.base().get_global_position().to_counterpart();
+        let calc_mouse_pos =
+            |ev: &InputEventMouse| (ev.get_position().to_alternative() - pos_offset) / ui_scale;
 
         let event = match event.try_cast::<InputEventMouseMotion>() {
             Err(event) => event,
             Ok(event) => {
-                self.on_event(egui::Event::PointerMoved(
-                    event.get_position().to_alternative() / ui_scale,
-                ));
+                self.on_event(egui::Event::PointerMoved(calc_mouse_pos(
+                    event.upcast_ref(),
+                )));
 
                 return ctx.wants_pointer_input();
             }
@@ -267,7 +270,7 @@ impl EguiViewportBridge {
 
                 let modifiers = modifier_to_egui(event.get_modifiers_mask());
                 let button = event.get_button_index();
-                let pos = event.get_position().to_alternative() / ui_scale;
+                let pos = calc_mouse_pos(event.upcast_ref());
 
                 #[derive(Debug)]
                 enum Type {

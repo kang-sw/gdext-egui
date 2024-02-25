@@ -25,10 +25,10 @@ impl IEditorPlugin for TestEguiPlugin {
         });
 
         let edt = EditorInterface::singleton();
-        edt.get_editor_main_screen()
-            .unwrap()
-            .add_child(egui.clone().upcast());
+        let mut main_screen = edt.get_editor_main_screen().unwrap();
+        main_screen.add_child(egui.clone().upcast());
 
+        egui.bind().sync_root_region(Some(main_screen.upcast()));
         self.make_visible(false);
     }
 
@@ -61,7 +61,7 @@ impl IEditorPlugin for TestEguiPlugin {
 
         let ctx = egui.bind().current_frame().clone();
 
-        egui::Window::new("Hello World").show(&ctx, |ui| {
+        egui::Window::new("aglagfSD").show(&ctx, |ui| {
             ui.label("Hello World!");
         });
 
