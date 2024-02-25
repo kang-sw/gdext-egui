@@ -62,6 +62,22 @@ pub struct EguiBridge {
 
     /// Determines the cursor shape of this frame.
     cursor_shape: RefCell<Option<egui::CursorIcon>>,
+
+    /// Handle to tesselation worker thread
+    thr_bg_worker: Option<std::thread::JoinHandle<()>>,
+
+    /// Handle to tesselation worker tx channel
+    tx_bg_task: Option<mpsc::Sender<BackgroundWorkCommand>>,
+}
+
+enum BackgroundWorkCommand {
+    RequestRepaint(ViewportId),
+    Tessellate(
+        Vec<egui::epaint::ClippedShape>,
+        f32,
+        oneshot::Sender<Vec<egui::ClippedPrimitive>>,
+    ),
+    Close, // Close the worker thread channel.
 }
 
 #[derive(Clone)]
@@ -206,17 +222,69 @@ impl From<()> for WidgetRetain {
 
 #[godot_api]
 impl ICanvasLayer for EguiBridge {
-    fn ready(&mut self) {
-        self.setup_egui();
-    }
-
     fn process(&mut self, _dt: f64) {
         if self.share.is_in_frame() {
             self.finish_frame();
         }
     }
 
+    fn enter_tree(&mut self) {
+        // Spawn background worker thread
+        {
+            let (tx_b, rx_b) = std::sync::mpsc::channel::<BackgroundWorkCommand>();
+            let ctx = self.share.egui.clone();
+            let th = std::thread::spawn(move || loop {
+                // Channel is always valid until `Close` command is received. Otherwise,
+                // it's a bug where `_exit_tree` is not invoked from engine.
+                let msg = rx_b.recv().expect("unexpected channel close");
+
+                match msg {
+                    BackgroundWorkCommand::RequestRepaint(viewport_id) => {
+                        ctx.request_repaint_of(viewport_id);
+                    }
+                    BackgroundWorkCommand::Tessellate(shapes, ppi, tx_response) => {
+                        let primitives = ctx.tessellate(shapes, ppi);
+                        tx_response.send(primitives).ok();
+                    }
+                    BackgroundWorkCommand::Close => break,
+                }
+            });
+
+            assert!(self.tx_bg_task.replace(tx_b).is_none());
+            assert!(self.thr_bg_worker.replace(th).is_none());
+        };
+
+        // Setup egui context & repaint callback.
+        (&self.share.egui).pipe(|ctx| {
+            let w_share = Arc::downgrade(&self.share);
+
+            ctx.set_embed_viewports(false);
+            ctx.set_request_repaint_callback({
+                // Prevent cyclic reference; `share` is already holding the reference!
+                let w_share = w_share.clone();
+                move |repaint| {
+                    let Some(share) = w_share.upgrade() else {
+                        godot_print!("Repaint requested for disposed egui bridge: {repaint:?}");
+                        return;
+                    };
+
+                    share.repaint(repaint);
+                }
+            });
+        });
+    }
+
     fn exit_tree(&mut self) {
+        // Join background worker thread. To do this, channel should be closed first.
+        self.tx_bg_task
+            .take()
+            .expect("channel not initialized")
+            .send(BackgroundWorkCommand::Close)
+            .expect("channel closed prematurely");
+
+        let bg_thr = self.thr_bg_worker.take().expect("thread not spawned");
+        bg_thr.join().expect("thread panicked");
+
         // Cleanup all godot resources
         self.textures.clear();
 
@@ -361,30 +429,17 @@ impl EguiBridge {
         // Ensure the ui frame gets
         self.queue_try_start_frame();
     }
+
+    /// Attach given node to given viewport's window.
+    ///
+    /// TODO: Implement this!
+    pub fn attach_to_viewport(&self, _id: ViewportId, node: Gd<Node>) -> Result<(), Gd<Node>> {
+        Err(node)
+    }
 }
 
 /// Private API implementations
 impl EguiBridge {
-    fn setup_egui(&mut self) {
-        (&self.share.egui).pipe(|ctx| {
-            let w_share = Arc::downgrade(&self.share);
-
-            ctx.set_embed_viewports(false);
-            ctx.set_request_repaint_callback({
-                // Prevent cyclic reference; `share` is already holding the reference!
-                let w_share = w_share.clone();
-                move |repaint| {
-                    let Some(share) = w_share.upgrade() else {
-                        godot_print!("Repaint requested for disposed egui bridge: {repaint:?}");
-                        return;
-                    };
-
-                    share.repaint(repaint);
-                }
-            });
-        });
-    }
-
     fn try_start_frame(&self) {
         assert!(std::thread::current().id() == self.share.main_thread_id);
 
@@ -832,18 +887,15 @@ impl EguiBridge {
                 }),
             );
 
-            let ctx = self.share.egui.clone();
+            let tx = self.tx_bg_task.as_ref().unwrap().clone();
             gd_painter.connect(
                 "resized".into(),
                 Callable::from_fn("Resize", move |_| {
-                    // Deadlock workaround
-                    let ctx = ctx.clone();
-
-                    // FIXME: Change to use dedicated tesselation thread.
-                    // - This simply blocks a rayon worker thread waiting for internal
-                    //   lock, which is obviously undesirable.
-                    rayon::spawn(move || ctx.request_repaint_of(id));
-
+                    // Send repaint request to background worker. Here we don't directly
+                    // call `Context::request_repaint` method on context object to prevent
+                    // deadlock, as we're not sure when this bound method is called. (it
+                    // actually deadlocks on widget initialization)
+                    tx.send(BackgroundWorkCommand::RequestRepaint(id)).ok();
                     Ok(Variant::nil())
                 }),
             );
@@ -1153,7 +1205,6 @@ impl EguiBridge {
         let ppi = output.pixels_per_point;
 
         // Que async tesselation jobs to Rayon.
-        let egui = self.share.egui.clone();
         let (tx, rx) = oneshot::channel();
 
         self.share
@@ -1167,10 +1218,8 @@ impl EguiBridge {
             });
 
         // Offload tesselation from game thread.
-        rayon::spawn_fifo(move || {
-            // It's just okay to fail.
-            tx.send(egui.tessellate(paints, ppi)).ok();
-        });
+        let tx_bg = self.tx_bg_task.as_ref().unwrap().clone();
+        let _ = tx_bg.send(BackgroundWorkCommand::Tessellate(paints, ppi, tx));
 
         let mut gd_wnd = self
             .surfaces

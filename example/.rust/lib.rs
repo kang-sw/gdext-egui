@@ -1,4 +1,4 @@
-#[cfg(any())] // NOTE: Temporarily disabling this example due to editor crash on hot reload
+// #[cfg(any())] // NOTE: Temporarily disabling this example due to editor crash on hot reload
 mod plugin;
 
 use std::sync::{

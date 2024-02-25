@@ -9,8 +9,6 @@ egui = { version = "0.26" }
 
 itertools = "0.12"
 
-rayon = "1"
-
 crossbeam-queue = "0.3"
 oneshot = "0.1"
 
