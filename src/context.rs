@@ -1,5 +1,3 @@
-mod widget;
-
 use std::{
     cell::RefCell,
     collections::{hash_map, HashSet, VecDeque},
@@ -26,7 +24,6 @@ use godot::{
 use tap::prelude::{Pipe, Tap};
 use with_drop::with_drop;
 
-pub use self::widget::*;
 use crate::{default, helpers::ToCounterpart, surface};
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -65,9 +62,6 @@ pub struct EguiBridge {
 
     /// Determines the cursor shape of this frame.
     cursor_shape: RefCell<Option<egui::CursorIcon>>,
-
-    /// widget context
-    pub widget: SpawnedWidgetContext,
 }
 
 #[derive(Clone)]
@@ -163,6 +157,50 @@ const VIEWPORT_CLOSE_CLOSE: u8 = 3;
 
 /// Callback for deferred context access, for non-rendering purposes.
 type FnDeferredContextAccess = dyn FnOnce(&egui::Context) + 'static;
+
+/* --------------------------------- Widget Lifetime Control -------------------------------- */
+
+/// Every spawned widgets are retained as long as the callback returns true.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WidgetRetain {
+    Retain,
+    Dispose,
+
+    /// For widgets, it is treated as `Retain` permanently. For viewports, it'll be
+    /// disposed at the end of frame.
+    #[default]
+    Unspecified,
+}
+
+impl WidgetRetain {
+    pub fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Dispose, _) | (_, Self::Dispose) => Self::Dispose,
+            (Self::Retain, _) | (_, Self::Retain) => Self::Retain,
+            _ => Self::Unspecified,
+        }
+    }
+
+    pub fn disposed(&self) -> bool {
+        matches!(self, Self::Dispose)
+    }
+}
+
+impl From<bool> for WidgetRetain {
+    fn from(x: bool) -> Self {
+        if x {
+            Self::Retain
+        } else {
+            Self::Dispose
+        }
+    }
+}
+
+impl From<()> for WidgetRetain {
+    fn from(_: ()) -> Self {
+        Self::Unspecified
+    }
+}
 
 /* ------------------------------------------ Godot Api ----------------------------------------- */
 
@@ -423,7 +461,7 @@ impl EguiBridge {
         // NOTE: Implementation is too long, thus splitting it into another function.
 
         // Handle spawned widgets most first; as it should not be affected by any other controls!
-        self._start_frame_handle_widgets();
+        // self._start_frame_handle_widgets();
     }
 
     fn finish_frame(&mut self) {

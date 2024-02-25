@@ -7,54 +7,60 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::context::WidgetRetain;
+
 use super::EguiBridge;
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                          PUBLIC TYPES                                          */
 /* ---------------------------------------------------------------------------------------------- */
 
-/* --------------------------------- Widget Lifetime Control -------------------------------- */
+/* ------------------------------------- Widget Creation ------------------------------------ */
 
-/// Every spawned widgets are retained as long as the callback returns true.
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WidgetRetain {
-    Retain,
-    Dispose,
+#[derive(Default)]
+pub struct SpawnedWidgetContext {
+    /// List of widgets
+    items: RefCell<BTreeMap<(PanelGroup, i32), PanelItem>>,
 
-    /// For widgets, it is treated as `Retain` permanently. For viewports, it'll be
-    /// disposed at the end of frame.
-    #[default]
-    Unspecified,
+    /// List of widgets, which is spawned this frame's rendering phase.
+    items_new: RefCell<Vec<NewWidgetItem>>,
+
+    /// List of menus
+    #[allow(unused)]
+    menu_root: RefCell<MenuNode>,
+
+    // #[export]
+    // #[var(get, set)]
+    pub hide_all: Cell<bool>,
+
+    pub hide_left: Cell<bool>,
+    pub hide_right: Cell<bool>,
+    pub hide_center: Cell<bool>,
+    pub hide_bottom: Cell<bool>,
 }
 
-impl WidgetRetain {
-    pub fn and(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Dispose, _) | (_, Self::Dispose) => Self::Dispose,
-            (Self::Retain, _) | (_, Self::Retain) => Self::Retain,
-            _ => Self::Unspecified,
-        }
-    }
+/// Type alias for widget declaration
+type NewWidgetItem = ((PanelGroup, NewWidgetSlot), Box<FnShowWidget>);
 
-    pub fn disposed(&self) -> bool {
-        matches!(self, Self::Dispose)
-    }
+/// Callback for showing spawned widget.
+type FnShowWidget = dyn FnMut(&mut egui::Ui) -> WidgetRetain + 'static;
+
+enum NewWidgetSlot {
+    Specified(i32),
+    Append,
+    Prepend,
 }
 
-impl From<bool> for WidgetRetain {
-    fn from(x: bool) -> Self {
-        if x {
-            Self::Retain
-        } else {
-            Self::Dispose
-        }
-    }
+/// Widget declaration & context
+struct PanelItem {
+    draw: Box<FnShowWidget>,
 }
 
-impl From<()> for WidgetRetain {
-    fn from(_: ()) -> Self {
-        Self::Unspecified
-    }
+#[allow(unused)]
+#[derive(Default)]
+struct MenuNode {
+    children: BTreeMap<String, MenuNode>,
+    draw: Option<Box<FnShowWidget>>,
 }
 
 /* ------------------------------------- Panel Grouping ------------------------------------- */
@@ -215,7 +221,7 @@ where
 /*                                              APIS                                              */
 /* ---------------------------------------------------------------------------------------------- */
 
-impl EguiBridge {
+impl SpawnedWidgetContext {
     /// Add a widget item to the main menu bar. This will silently replace the existing
     /// item if path is already exist.
     ///
@@ -246,7 +252,7 @@ impl EguiBridge {
         T: Into<String>,
         L: Into<WidgetRetain>,
     {
-        let mut node = &mut *self.widget.menu_root.borrow_mut();
+        let mut node = &mut *self.menu_root.borrow_mut();
         for seg in path {
             let seg = seg.into();
             node = node.children.entry(seg).or_default();
@@ -297,18 +303,15 @@ impl EguiBridge {
         L: Into<WidgetRetain>,
     {
         let show = Box::new(move |ui: &mut _| widget(ui).into());
-        self.widget
-            .items_new
-            .borrow_mut()
-            .push(((panel, slot), show));
+        self.items_new.borrow_mut().push(((panel, slot), show));
     }
 }
 
 /* ------------------------------------------ Internals ----------------------------------------- */
 
-impl EguiBridge {
-    pub(super) fn _start_frame_handle_widgets(&self) {
-        if self.widget.hide_all.get() {
+impl SpawnedWidgetContext {
+    pub(super) fn _start_frame_handle_widgets(&self, ctx: &mut egui::Context) {
+        if self.hide_all.get() {
             return;
         }
 
@@ -323,17 +326,17 @@ impl EguiBridge {
         //     self.render_main_menu();
 
         // Render widgets
-        self.render_widget_items();
+        self.render_widget_items(ctx);
     }
 
-    fn _render_main_menu(&self) {
-        let mut root = self.widget.menu_root.borrow_mut();
+    fn _render_main_menu(&self, ctx: &egui::Context) {
+        let mut root = self.menu_root.borrow_mut();
 
         if root.children.is_empty() && root.draw.is_none() {
             return;
         }
 
-        egui::TopBottomPanel::top("%%EguiBridge%%MainMenu").show(&self.share.egui, |ui| {
+        egui::TopBottomPanel::top("%%EguiBridge%%MainMenu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 recurse_node(ui, &mut root);
             })
@@ -366,18 +369,17 @@ impl EguiBridge {
         }
     }
 
-    fn render_widget_items(&self) {
+    fn render_widget_items(&self, ctx: &egui::Context) {
         // Apply widget patches right before rendering.
-        let ctx = &self.share.egui;
-        let widgets = &mut *self.widget.items.borrow_mut();
-        let w = &self.widget;
+        let widgets = &mut *self.items.borrow_mut();
+        let w = self;
 
         const APPEND_SLOT_LOWER: i32 = i32::MAX >> 1;
         const PREPEND_SLOT_UPPER: i32 = i32::MIN >> 1;
 
         /* --------------------------------- New Slot Allocation -------------------------------- */
 
-        for ((group, slot), draw) in self.widget.items_new.borrow_mut().drain(..) {
+        for ((group, slot), draw) in w.items_new.borrow_mut().drain(..) {
             let slot_index = match slot {
                 NewWidgetSlot::Specified(idx) => idx,
                 NewWidgetSlot::Append => {
@@ -505,7 +507,6 @@ impl EguiBridge {
                 .auto_sized()
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        let w = &self.widget;
                         [
                             (&w.hide_center, "Center"),
                             (&w.hide_left, "Left"),
@@ -532,51 +533,3 @@ impl EguiBridge {
 /* ---------------------------------------------------------------------------------------------- */
 /*                                              TYPES                                             */
 /* ---------------------------------------------------------------------------------------------- */
-
-/* ------------------------------------- Widget Creation ------------------------------------ */
-
-#[derive(Default)]
-pub struct SpawnedWidgetContext {
-    /// List of widgets
-    items: RefCell<BTreeMap<(PanelGroup, i32), PanelItem>>,
-
-    /// List of widgets, which is spawned this frame's rendering phase.
-    items_new: RefCell<Vec<NewWidgetItem>>,
-
-    /// List of menus
-    #[allow(unused)]
-    menu_root: RefCell<MenuNode>,
-
-    // #[export]
-    // #[var(get, set)]
-    pub hide_all: Cell<bool>,
-
-    pub hide_left: Cell<bool>,
-    pub hide_right: Cell<bool>,
-    pub hide_center: Cell<bool>,
-    pub hide_bottom: Cell<bool>,
-}
-
-/// Type alias for widget declaration
-type NewWidgetItem = ((PanelGroup, NewWidgetSlot), Box<FnShowWidget>);
-
-/// Callback for showing spawned widget.
-type FnShowWidget = dyn FnMut(&mut egui::Ui) -> WidgetRetain + 'static;
-
-enum NewWidgetSlot {
-    Specified(i32),
-    Append,
-    Prepend,
-}
-
-/// Widget declaration & context
-struct PanelItem {
-    draw: Box<FnShowWidget>,
-}
-
-#[allow(unused)]
-#[derive(Default)]
-struct MenuNode {
-    children: BTreeMap<String, MenuNode>,
-    draw: Option<Box<FnShowWidget>>,
-}

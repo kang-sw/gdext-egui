@@ -1,9 +1,11 @@
+mod plugin;
+
 use std::sync::{
     atomic::{AtomicUsize, Ordering::Relaxed},
     Arc,
 };
 
-use gdext_egui::{context::PanelGroup, egui, EguiBridge, ViewportBuilder, ViewportId};
+use gdext_egui::{egui, EguiBridge, ViewportBuilder, ViewportId};
 use godot::{
     engine::{self, CanvasLayer, ICanvasLayer},
     prelude::*,
@@ -110,31 +112,6 @@ impl INode for WidgetExample {
                 }
             },
         );
-
-        // There are several pre-defined panels in EguiBridge. Unless you use this
-        // functionality, they don't affect any of your EGUI context. These are useful
-        // when you don't want to write any *central* context your own which manages the
-        // layout and appearance of the individual UI items.
-        let spawn_group_item = |group: PanelGroup, index: i32| {
-            egui.panel_item_insert(group, index, move |ui| {
-                !ui.button(format!("{:?} Panel: {}", group, index)).clicked()
-            });
-        };
-
-        for offset in 0..100 {
-            spawn_group_item(PanelGroup::Left, -2 + offset);
-            spawn_group_item(PanelGroup::Left, 1 + offset);
-            spawn_group_item(PanelGroup::Right, -1 + offset);
-            spawn_group_item(PanelGroup::Right, 1 + offset);
-            spawn_group_item(PanelGroup::Central, -1 + offset);
-            spawn_group_item(PanelGroup::Central, 3 + offset);
-            spawn_group_item(PanelGroup::Central, 2 + offset);
-            spawn_group_item(PanelGroup::BottomLeft, 2 + offset);
-            spawn_group_item(PanelGroup::BottomLeft, 1 + offset);
-            spawn_group_item(PanelGroup::BottomRight, 2 + offset);
-            spawn_group_item(PanelGroup::BottomRight, 3 + offset);
-            spawn_group_item(PanelGroup::BottomRight, 6 + offset);
-        }
     }
 }
 
