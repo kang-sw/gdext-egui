@@ -935,14 +935,19 @@ impl EguiBridge {
 
                 // NOTE: For root viewport...
                 //
-                // Godot's default `gui_input` handling method, does not propagate inputs into
-                // its siblings if they are obscured by this node. Since we're creating a
-                // control which covers entire drawable space, and intercepting all inputs, if
-                // mouse filter is applied anything other than `IGNORE` would effectively
-                // prevent all other non-parent node to receive any input.
+                // TODO: Merge `IGNORE` behavior between non-root and root.
+                // - This is required to implement `add node as child of viewport`
+                //   feature.
                 //
-                // Therefore, we rather intercept any inputs in `_input()` method, and if we
-                // need to consume the input inside egui, we rather make call to
+                // Godot's default `gui_input` handling method, does not propagate inputs
+                // into its siblings if they are obscured by this node. Since we're
+                // creating a control which covers entire drawable space, and intercepting
+                // all inputs, if mouse filter is applied anything other than `IGNORE`
+                // would effectively prevent all other non-parent node to receive any
+                // input.
+                //
+                // Therefore, we rather intercept any inputs in `_input()` method, and if
+                // we need to consume the input inside egui, we rather make call to
                 // `Viewport::set_input_as_handled()` which consumes input even before
                 // reaching out to `gui_input()` callbacks of any.
                 gd_painter.set_mouse_filter(MouseFilter::IGNORE);
