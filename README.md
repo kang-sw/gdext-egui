@@ -2,8 +2,6 @@
 
 [Example Godot project](./example)
 
-[See gif (2.8MibB) of working example](https://dcimg7.dcinside.co.kr/viewimage.php?id=2ab4c42ef0d0&no=24b0d769e1d32ca73ce985fa11d028315015801132de093a7d99d0d3dad9ab675e5063d2e26195306cfecf0ddb34adb6e3bd29b80292d07c18e05194)
-
 # Usage
 
 In Cargo.toml, under the `[dependencies]` tab
