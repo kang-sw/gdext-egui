@@ -2,6 +2,8 @@
 
 [Example Godot project](./example)
 
+[See Gif of working example(Reddit link, 2.8MiB~)](https://preview.redd.it/u8pyxls1eakc1.gif?format=mp4&s=deb1cc2183d249a3ba6feeef5f7e93baab120ae9)
+
 # Usage
 
 In Cargo.toml, under the `[dependencies]` tab
