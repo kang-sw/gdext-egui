@@ -17,5 +17,5 @@ egui_demo_lib = { git = "https://github.com/emilk/egui.git", tag = "0.26.2" }
 [patch.crates-io]
 egui = { git = "https://github.com/emilk/egui.git", tag = "0.26.2" }
 
-[patch."https://github.com/godot-rust/gdext"]
-godot = { path = "gdext/godot" }
+# [patch."https://github.com/godot-rust/gdext"]
+# godot = { path = "gdext/godot" }
