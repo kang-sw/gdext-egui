@@ -537,8 +537,6 @@ impl EguiViewportBridge {
             clip.max.x *= scale;
             clip.max.y *= scale;
 
-            gd_rs.canvas_item_set_clip(rid_item, true);
-
             gd_rs
                 .canvas_item_set_custom_rect_ex(rid_item, true)
                 .rect(clip.to_counterpart())
