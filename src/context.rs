@@ -545,15 +545,16 @@ impl EguiBridge {
 
         self.rx_bg_task.take();
 
-        // Cleanup all godot resources
-        self.textures.clear();
+        // XXX: Seems all these manual cleanup redundant; as they're all in the tree?
 
-        self.share.viewports.lock().clear();
-        self.share.spawned_viewports.lock().clear();
+        // self.textures.clear();
 
-        for (_, surface) in self.surfaces.borrow_mut().drain() {
-            Self::free_surface(Some(surface));
-        }
+        // self.share.viewports.lock().clear();
+        // self.share.spawned_viewports.lock().clear();
+
+        // for (_, surface) in self.surfaces.borrow_mut().drain() {
+        //     Self::free_surface(Some(surface));
+        // }
     }
 
     fn try_start_frame(&self) {
