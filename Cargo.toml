@@ -3,6 +3,9 @@ name = "gdext-egui"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+exclude = ["example/.rust"]
+
 [dependencies]
 godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
 egui = { version = "0.26" }

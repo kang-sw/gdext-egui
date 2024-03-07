@@ -59,20 +59,14 @@ impl IEditorPlugin for TestEguiPlugin {
             return;
         };
 
+        if !egui.is_visible() {
+            return;
+        }
+
         let ctx = egui.bind().current_frame().clone();
 
         egui::Window::new("aglagfSD").show(&ctx, |ui| {
             ui.label("Hello World!");
         });
-
-        ctx.show_viewport_immediate(
-            ViewportId::from_hash_of("hoal"),
-            ViewportBuilder::default().with_title("a-ha!"),
-            |ctx, _| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.label("Hello World!");
-                });
-            },
-        );
     }
 }

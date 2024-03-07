@@ -3,6 +3,8 @@ name = "gdext_egui_example"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+
 [lib]
 crate-type = ["cdylib"]
 name = "gdext_egui_example"
@@ -16,6 +18,7 @@ egui_demo_lib = { git = "https://github.com/emilk/egui.git", tag = "0.26.2" }
 
 [patch.crates-io]
 egui = { git = "https://github.com/emilk/egui.git", tag = "0.26.2" }
+egui_extras = { git = "https://github.com/emilk/egui.git", tag = "0.26.2" }
 
 # [patch."https://github.com/godot-rust/gdext"]
 # godot = { path = "gdext/godot" }
