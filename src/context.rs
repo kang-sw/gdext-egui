@@ -3,7 +3,10 @@ use std::{
     collections::{hash_map, HashSet, VecDeque},
     mem::take,
     sync::{
-        atomic::{AtomicBool, AtomicU8, Ordering::Relaxed},
+        atomic::{
+            AtomicBool, AtomicU8,
+            Ordering::{self, Relaxed},
+        },
         mpsc, Arc,
     },
     thread::ThreadId,
@@ -80,9 +83,15 @@ pub struct EguiBridge {
     /// A object that root region is being synced.
     root_region_sync: Cell<Option<Gd<WeakRef>>>,
 
-    /// non-send + non-sync
+    /// callbacks for widgets rendering.
+    widget_callbacks_first: RefCell<Vec<(i32, Box<FnWidgetCallback>)>>,
+    widget_callbacks_last: RefCell<Vec<(i32, Box<FnWidgetCallback>)>>,
+
+    /// non-send + non-sync even when threading is implemented for godot objects ...
     _non_send_sync: std::marker::PhantomData<*const ()>,
 }
+
+type FnWidgetCallback = dyn FnMut(&egui::Context) -> WidgetRetain + 'static;
 
 enum BackgroundWorkCommand {
     RequestRepaint(ViewportId),
@@ -107,6 +116,9 @@ struct SurfaceContext {
 #[educe(Default)]
 struct SharedContext {
     egui: egui::Context,
+
+    /// Repaint was queued.
+    repaint_queued: AtomicBool,
 
     /// Detects whether to start new frame.
     frame_started: AtomicBool,
@@ -237,6 +249,10 @@ impl From<()> for WidgetRetain {
 #[godot_api]
 impl ICanvasLayer for EguiBridge {
     fn process(&mut self, _dt: f64) {
+        if self.share.repaint_queued.swap(false, Relaxed) {
+            self.current_frame();
+        }
+
         if self.share.is_in_frame() {
             self.finish_frame();
         }
@@ -398,6 +414,52 @@ impl EguiBridge {
 
         // Ensure the ui frame gets
         self.queue_try_start_frame();
+    }
+
+    /// Registers callback for widget rendering at frame start.
+    ///
+    /// See also [`FnEguiDrawExt`] decorator for every method with signature
+    /// `impl FnMut(&egui::Context) -> impl Into<WidgetRetain> + 'static`
+    ///
+    /// Callbacks registered with lower priority will be called earlier.
+    pub fn register_render_callback_first<L>(&self, priority: i32, widget: impl FnEguiDraw<L>)
+    where
+        L: Into<WidgetRetain>,
+    {
+        self.impl_push_panel_item(true, priority, widget);
+    }
+
+    /// Registers callback for widget rendering at frame end.
+    ///
+    /// See also [`FnEguiDrawExt`] decorator for every method with signature
+    /// `impl FnMut(&egui::Context) -> impl Into<WidgetRetain> + 'static`
+    ///
+    /// Callbacks registered with lower priority will be called earlier.
+    pub fn register_render_callback_last<L>(&self, priority: i32, widget: impl FnEguiDraw<L>)
+    where
+        L: Into<WidgetRetain>,
+    {
+        self.impl_push_panel_item(false, priority, widget);
+    }
+
+    /// Registers callback for widget rendering, at very first of the frame start.
+    fn impl_push_panel_item<L>(&self, first: bool, priority: i32, mut widget: impl FnEguiDraw<L>)
+    where
+        L: Into<WidgetRetain>,
+    {
+        let show = Box::new(move |ui: &_| widget(ui).into());
+        let mut arr = if first {
+            self.widget_callbacks_first.borrow_mut()
+        } else {
+            self.widget_callbacks_last.borrow_mut()
+        };
+
+        let insert_index = arr
+            .binary_search_by_key(&priority, |(p, ..)| *p)
+            .unwrap_or_else(|x| x);
+
+        arr.insert(insert_index, (priority, show));
+        self.share.repaint_queued.store(true, Relaxed);
     }
 
     /// Spawn new viewport as child of existing node. If specified parent node is behind
@@ -629,10 +691,35 @@ impl EguiBridge {
 
         self.viewport_start_frame(egui::ViewportId::ROOT);
 
-        // NOTE: Implementation is too long, thus splitting it into another function.
+        // Call registered callbacks for start of the frames.
+        self.invoke_registered_callbacks(true);
+    }
 
-        // Handle spawned widgets most first; as it should not be affected by any other controls!
-        // self._start_frame_handle_widgets();
+    fn invoke_registered_callbacks(&self, first: bool) {
+        let get_cb = || {
+            if first {
+                self.widget_callbacks_first.borrow_mut()
+            } else {
+                self.widget_callbacks_last.borrow_mut()
+            }
+        };
+
+        let mut callbacks = { take(&mut *get_cb()) };
+
+        // We release borrow here to make callbacks safely invoke
+        // `register_render_callback_*` methods.
+
+        callbacks.retain_mut(|(_, cb)| !cb(&self.share.egui).disposed());
+
+        let mut cbs = get_cb();
+        let should_sort = !cbs.is_empty() && !callbacks.is_empty();
+
+        if should_sort {
+            cbs.extend(callbacks);
+            cbs.sort_by_key(|(p, ..)| *p);
+        } else {
+            *cbs = callbacks;
+        }
     }
 
     fn reset_root_region_sync(&self) {
@@ -653,7 +740,10 @@ impl EguiBridge {
         let share = self.share.clone();
 
         /* ------------------------- Spawned Widget / Viewport Handling ------------------------- */
+        // Deal with registered callbacks for frame end.
+        self.invoke_registered_callbacks(false);
 
+        // Deal with spawned viewports.
         let viewports = take(&mut *share.spawned_viewports.lock()).tap_mut(|viewports| {
             // Check if any of the spawned viewports should be disposed.
             viewports.retain(|id, value| {
@@ -996,12 +1086,12 @@ impl EguiBridge {
             let ctx = self.share.egui.clone();
             gd_painter.bind_mut().initiate(
                 ctx.clone(),
+                id,
                 Box::new(move |ev| {
                     // NOTE: cloning egui context into this closure doesn't make cyclic reference
                     // - Both are field of `Self`, which does not refer to each other.
 
                     tx_viewport.send(ev).ok(); // Failing this is just okay.
-                    ctx.request_repaint_of(id);
                 }),
             );
 
@@ -1438,6 +1528,7 @@ impl SharedContext {
     fn repaint(&self, info: egui::RequestRepaintInfo) {
         if let Some(x) = self.viewports.lock().get_mut(&info.viewport_id) {
             x.repaint_at = Some(Instant::now() + info.delay);
+            self.repaint_queued.store(true, Relaxed);
         } else {
             godot_warn!("EGUI requested repaint for unregistered viewpot: {info:?}")
         };
@@ -1454,4 +1545,122 @@ impl SharedContext {
     fn finish_frame(&self) {
         self.frame_started.store(false, Relaxed);
     }
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                         WIDGET SUPPORT                                         */
+/* ---------------------------------------------------------------------------------------------- */
+
+/* ----------------------------------------- Decorators ----------------------------------------- */
+
+/// Base trait for all widget callbacks.
+pub trait FnEguiDraw<R>: FnMut(&egui::Context) -> R + 'static
+where
+    R: Into<WidgetRetain>,
+{
+}
+
+impl<T, R> FnEguiDraw<R> for T
+where
+    T: FnMut(&egui::Context) -> R + 'static,
+    R: Into<WidgetRetain> + 'static,
+{
+}
+
+/* ------------------------------------- Expiration Sentinel ------------------------------------ */
+
+pub trait CheckExpired: 'static {
+    fn expired(&self) -> bool;
+}
+
+impl<T: 'static> CheckExpired for std::rc::Weak<T> {
+    fn expired(&self) -> bool {
+        self.strong_count() == 0
+    }
+}
+
+impl<T: 'static> CheckExpired for std::sync::Weak<T> {
+    fn expired(&self) -> bool {
+        self.strong_count() == 0
+    }
+}
+
+impl CheckExpired for std::sync::Arc<AtomicBool> {
+    fn expired(&self) -> bool {
+        !self.load(Ordering::Relaxed)
+    }
+}
+
+impl<T: GodotClass> CheckExpired for Gd<T> {
+    fn expired(&self) -> bool {
+        self.is_instance_valid()
+    }
+}
+
+impl CheckExpired for std::rc::Rc<std::cell::Cell<bool>> {
+    fn expired(&self) -> bool {
+        !self.get()
+    }
+}
+
+impl CheckExpired for bool {
+    fn expired(&self) -> bool {
+        !*self
+    }
+}
+
+/* ------------------------------------------ Extension ----------------------------------------- */
+
+/// Various utilities to extend the widget callback.
+pub trait FnEguiDrawExt<L: Into<WidgetRetain>>: Sized + FnEguiDraw<L> {
+    /// Set the expiration time of the widget. If the widget is not disposed after the given
+    /// system time, it'll be disposed automatically.
+    fn expires_at(mut self, expiration: Instant) -> impl FnEguiDrawExt<WidgetRetain> {
+        move |ctx: &egui::Context| {
+            if Instant::now() > expiration {
+                WidgetRetain::Dispose
+            } else {
+                self(ctx).into()
+            }
+        }
+    }
+
+    /// Set the expiration time of the widget. If the widget is not disposed after the given
+    /// time, it'll be disposed automatically.
+    fn bind<C: CheckExpired>(mut self, expired: C) -> impl FnEguiDrawExt<WidgetRetain> {
+        move |ctx: &egui::Context| {
+            if expired.expired() {
+                WidgetRetain::Dispose
+            } else {
+                self(ctx).into()
+            }
+        }
+    }
+
+    /// Trigger the widget only once. After the first call, the widget will be disposed.
+    fn once(mut self) -> impl FnEguiDrawExt<WidgetRetain> {
+        move |ctx: &egui::Context| {
+            // Only the first call will be executed.
+            let _ = self(ctx).into();
+            WidgetRetain::Dispose
+        }
+    }
+
+    /// Set the lifespan of the widget. If the widget is not disposed after the given
+    /// time, it'll be disposed automatically.
+    ///
+    /// # Warning
+    ///
+    /// The time is not game delta time, but the system time: Which means, even if you
+    /// stopped the game, the widget will be disposed after the given 'real' time.
+    fn lifespan(self, duration: Duration) -> impl FnEguiDrawExt<WidgetRetain> {
+        self.expires_at(Instant::now() + duration)
+    }
+}
+
+impl<T, L> FnEguiDrawExt<L> for T
+where
+    T: FnMut(&egui::Context) -> L + 'static,
+    L: Into<WidgetRetain> + 'static,
+{
 }

@@ -1,4 +1,6 @@
-use gdext_egui::{egui, EguiBridge, ViewportBuilder, ViewportId};
+use std::{cell::Cell, rc::Rc};
+
+use gdext_egui::{context::FnEguiDrawExt, egui, EguiBridge};
 use godot::{
     engine::{EditorInterface, EditorPlugin, IEditorPlugin},
     prelude::*,
@@ -9,11 +11,14 @@ use godot::{
 pub struct TestEguiPlugin {
     base: Base<EditorPlugin>,
     egui: Option<Gd<EguiBridge>>,
+
+    handle: Option<Rc<()>>,
+    counter: Cell<usize>,
 }
 
 #[godot_api]
 impl IEditorPlugin for TestEguiPlugin {
-    fn enter_tree(&mut self) {
+    fn ready(&mut self) {
         if let Some(mut prev) = self.egui.replace(EguiBridge::new_alloc()) {
             prev.queue_free();
         }
@@ -24,6 +29,17 @@ impl IEditorPlugin for TestEguiPlugin {
             ctx.set_zoom_factor(1.5);
         });
 
+        let handle = Rc::new(());
+        let self_gd = self.to_gd();
+        egui.bind().register_render_callback_last(
+            0,
+            (move |ctx: &egui::Context| {
+                self_gd.bind().show(ctx);
+            })
+            .bind(Rc::downgrade(&handle)),
+        );
+        self.handle = Some(handle);
+
         let edt = EditorInterface::singleton();
         let mut main_screen = edt.get_editor_main_screen().unwrap();
         main_screen.add_child(egui.clone().upcast());
@@ -33,6 +49,8 @@ impl IEditorPlugin for TestEguiPlugin {
     }
 
     fn exit_tree(&mut self) {
+        let _ = self.handle.take();
+
         if let Some(mut egui) = self.egui.take() {
             egui.queue_free();
         }
@@ -54,19 +72,20 @@ impl IEditorPlugin for TestEguiPlugin {
         egui.set_visible(value);
     }
 
-    fn process(&mut self, _dt: f64) {
+    fn process(&mut self, _: f64) {
         let Some(egui) = self.egui.as_ref() else {
             return;
         };
 
-        if !egui.is_visible() {
-            return;
-        }
+        let _ = egui;
+    }
+}
 
-        let ctx = egui.bind().current_frame().clone();
-
-        egui::Window::new("aglagfSD").show(&ctx, |ui| {
-            ui.label("Hello World!");
+impl TestEguiPlugin {
+    fn show(&self, ctx: &egui::Context) {
+        egui::Window::new("aglagfSD").show(ctx, |ui| {
+            self.counter.set(self.counter.get() + 1);
+            ui.label(format!("Hello World! {}", self.counter.get()));
         });
     }
 }

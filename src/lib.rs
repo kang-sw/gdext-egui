@@ -10,6 +10,7 @@ macro_rules! symbol_string {
 
 pub mod context;
 mod surface;
+pub mod widgets;
 
 pub extern crate egui;
 

@@ -127,6 +127,9 @@ impl TextureLibrary {
 pub(crate) struct EguiViewportBridge {
     base: Base<Control>,
 
+    /// Viewport ID of self.
+    viewport_id: Option<egui::ViewportId>,
+
     /// Any GUI event will be forwarded to this.
     fwd_event: Option<Box<dyn Fn(egui::Event)>>,
 
@@ -222,6 +225,12 @@ impl EguiViewportBridge {
     fn on_event(&self, event: egui::Event) {
         if let Some(ev) = self.fwd_event.as_deref() {
             ev(event);
+
+            let (Some(ctx), Some(id)) = (&self.context, self.viewport_id) else {
+                unreachable!()
+            };
+
+            ctx.request_repaint_of(id);
         }
     }
 
@@ -231,9 +240,15 @@ impl EguiViewportBridge {
         }
     }
 
-    pub fn initiate(&mut self, ctx: egui::Context, on_event: Box<dyn Fn(egui::Event)>) {
+    pub fn initiate(
+        &mut self,
+        ctx: egui::Context,
+        id: egui::ViewportId,
+        on_event: Box<dyn Fn(egui::Event)>,
+    ) {
         self.context = Some(ctx);
         self.fwd_event = Some(on_event);
+        self.viewport_id = Some(id);
     }
 
     /// Try to consume the input once, and returns whether the input was consumed or not.
