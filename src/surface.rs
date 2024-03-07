@@ -2,7 +2,7 @@ use egui::{ahash::HashMap, DragAndDrop};
 use godot::{
     engine::{
         self,
-        control::{FocusMode, LayoutPreset},
+        control::{FocusMode, LayoutPreset, MouseFilter},
         global::{self, KeyModifierMask},
         notify::ControlNotification,
         Control, DisplayServer, IControl, ImageTexture, InputEventKey, InputEventMouse,
@@ -146,6 +146,16 @@ pub(crate) struct EguiViewportBridge {
 
 #[godot_api]
 impl IControl for EguiViewportBridge {
+    fn ready(&mut self) {
+        self.base_mut().tap_mut(|b| {
+            // Makes node to fill the whole available space
+            b.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
+
+            // Make this node to be focusable
+            b.set_focus_mode(FocusMode::CLICK);
+        });
+    }
+
     fn can_drop_data(&self, at_position: Vector2, data: Variant) -> bool {
         // We just take any type of data once dropped. Also, we don't need to check the
         // dropped position for now, it is currently tracked by egui context, and returns
@@ -173,17 +183,6 @@ impl IControl for EguiViewportBridge {
         // TODO: Use `Control::force_drag` method
         Variant::nil()
     }
-
-    fn ready(&mut self) {
-        self.base_mut().tap_mut(|b| {
-            // Makes node to fill the whole available space
-            b.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
-
-            // Make this node to be focusable
-            b.set_focus_mode(FocusMode::CLICK);
-        });
-    }
-
     fn exit_tree(&mut self) {
         // Don't make it leak resource.
         let mut gd_rs = RenderingServer::singleton();
