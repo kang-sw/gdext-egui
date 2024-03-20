@@ -1,4 +1,4 @@
-use egui::{ahash::HashMap, DragAndDrop};
+use egui::{ahash::HashMap, DragAndDrop, ViewportId};
 use godot::{
     engine::{
         self,
@@ -208,12 +208,33 @@ impl IControl for EguiViewportBridge {
     }
 
     fn input(&mut self, event: Gd<engine::InputEvent>) {
+        let mut may_drop_payload = false;
+
         if self.try_consume_input(event) {
+            may_drop_payload = true;
             self.mark_input_handled();
+        }
+
+        if false & may_drop_payload {
+            let filter = if self.context.as_ref().unwrap().is_pointer_over_area() {
+                // Let this widget able to take drop payload / register drag payload.
+                MouseFilter::PASS
+            } else {
+                MouseFilter::IGNORE
+            };
+
+            self.base_mut().set_mouse_filter(filter);
+        } else {
+            self.base_mut().set_mouse_filter(MouseFilter::IGNORE);
         }
     }
 
     fn gui_input(&mut self, event: Gd<engine::InputEvent>) {
+        if self.viewport_id == Some(ViewportId::ROOT) {
+            // See `input` method.
+            return;
+        }
+
         if self.try_consume_input(event) {
             self.base_mut().accept_event();
         }
@@ -271,7 +292,7 @@ impl EguiViewportBridge {
                     event.upcast_ref(),
                 )));
 
-                return ctx.wants_pointer_input();
+                return ctx.is_pointer_over_area();
             }
         };
 
