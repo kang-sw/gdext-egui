@@ -8,9 +8,9 @@ exclude = ["example/.rust"]
 
 [dependencies]
 godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
-egui = { version = "0.26" }
+egui = { version = "0.27" }
 
-itertools = "0.12"
+itertools = "0.13"
 
 crossbeam-queue = "0.3"
 oneshot = "0.1"
