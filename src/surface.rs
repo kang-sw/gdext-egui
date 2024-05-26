@@ -109,7 +109,7 @@ impl TextureLibrary {
         };
     }
 
-    pub fn clear(&mut self) {
+    pub fn _clear(&mut self) {
         // RefCounted object doesn't need to be freed manually.
         self.textures.clear();
     }

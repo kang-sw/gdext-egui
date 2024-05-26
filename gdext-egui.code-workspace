@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "example/.rust"
+		},
+		{
+			"path": "example"
+		}
+	],
+	"settings": {}
+}

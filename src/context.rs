@@ -1414,8 +1414,6 @@ impl EguiBridge {
                 vp.target_ui_scale = ppi;
             });
 
-        // Offload tesselation from game thread.
-
         let mut gd_wnd = self
             .surfaces
             .borrow_mut()
