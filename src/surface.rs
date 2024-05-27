@@ -3,11 +3,11 @@ use godot::{
     engine::{
         self,
         control::{FocusMode, LayoutPreset, MouseFilter},
-        global::{self, KeyModifierMask},
         notify::ControlNotification,
         Control, DisplayServer, IControl, ImageTexture, InputEventKey, InputEventMouse,
         InputEventMouseButton, InputEventMouseMotion, RenderingServer,
     },
+    global::{self, KeyModifierMask},
     prelude::*,
 };
 use itertools::multizip;
@@ -194,13 +194,13 @@ impl IControl for EguiViewportBridge {
 
     fn on_notification(&mut self, what: ControlNotification) {
         match what {
-            ControlNotification::FocusEnter => {
+            ControlNotification::FOCUS_ENTER => {
                 self.on_event(egui::Event::WindowFocused(true));
             }
-            ControlNotification::FocusExit => {
+            ControlNotification::FOCUS_EXIT => {
                 self.on_event(egui::Event::WindowFocused(false));
             }
-            ControlNotification::MouseExit => {
+            ControlNotification::MOUSE_EXIT => {
                 self.on_event(egui::Event::PointerGone);
             }
             _ => (),

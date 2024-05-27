@@ -24,6 +24,7 @@ use godot::{
         control::{LayoutPreset, MouseFilter},
         window, CanvasLayer, Control, DisplayServer, ICanvasLayer, WeakRef,
     },
+    global,
     prelude::*,
 };
 use tap::prelude::{Pipe, Tap};
@@ -569,7 +570,7 @@ impl EguiBridge {
         self.try_initiate();
 
         // Register immediate renderer for this frame.
-        let w_self = utilities::weakref(self.to_gd().to_variant());
+        let w_self = global::weakref(self.to_gd().to_variant());
 
         // TODO: Make this not to capture anything; instead let it retrieve required data
         // from `ctx`
