@@ -19,7 +19,7 @@ use egui::{
     ViewportId, ViewportIdMap,
 };
 use godot::{
-    engine::{
+    classes::{
         self,
         control::{LayoutPreset, MouseFilter},
         window, CanvasLayer, Control, DisplayServer, ICanvasLayer, WeakRef,
@@ -54,7 +54,7 @@ pub struct EguiBridge {
     /// The texture will be 2^max_texture_size
     #[export]
     #[var(get, set)]
-    #[init(default = 13)]
+    #[init(val = 13)]
     pub max_texture_bits: u8,
 
     /// Texture storage
@@ -102,7 +102,7 @@ struct SurfaceContext {
     painter: Gd<surface::EguiViewportBridge>,
 
     /// Container window if exist.
-    window: Option<Gd<engine::Window>>,
+    window: Option<Gd<classes::Window>>,
 }
 
 #[derive(Educe)]
@@ -617,14 +617,14 @@ impl EguiBridge {
             .pipe(|vp| {
                 let mut inp = share.raw_input_template.lock();
                 inp.viewports = vp;
-                inp.time = Some(engine::Time::singleton().get_ticks_usec() as f64 / 1e6);
+                inp.time = Some(classes::Time::singleton().get_ticks_usec() as f64 / 1e6);
 
                 // XXX: 256~ 65536 texture size limitation => is this practical?
                 inp.max_texture_side = Some(1 << (self.max_texture_bits as usize).clamp(8, 16));
                 inp.modifiers = {
-                    use engine::global::Key as GdKey;
+                    use global::Key as GdKey;
 
-                    let gd_input = engine::Input::singleton();
+                    let gd_input = classes::Input::singleton();
                     let is_pressed = |k: GdKey| gd_input.is_key_pressed(k);
 
                     egui::Modifiers {
@@ -879,7 +879,7 @@ impl EguiBridge {
 
         // Handle cursor shape
         if let Some(cursor) = self.cursor_shape.take() {
-            type CS = engine::display_server::CursorShape;
+            type CS = classes::display_server::CursorShape;
             let mut ds = DisplayServer::singleton();
 
             ds.cursor_set_shape(match cursor {
@@ -1097,8 +1097,8 @@ impl EguiBridge {
 
             let gd_wnd = if id == ViewportId::ROOT {
                 // Attach directly to this component.
-                self.to_gd().add_child(gd_painter.clone().upcast());
-                gd_painter.set_owner(self.to_gd().upcast());
+                self.to_gd().add_child(gd_painter.clone());
+                gd_painter.set_owner(self.to_gd());
 
                 // NOTE: For root viewport...
                 //
@@ -1132,13 +1132,13 @@ impl EguiBridge {
                 gd_painter.set_process_input(false);
 
                 // Spawn additional window to hold painter.
-                let mut gd_wnd = engine::Window::new_alloc();
+                let mut gd_wnd = classes::Window::new_alloc();
 
-                self.to_gd().add_child(gd_wnd.clone().upcast());
-                gd_wnd.set_owner(self.to_gd().upcast());
+                self.to_gd().add_child(gd_wnd.clone());
+                gd_wnd.set_owner(self.to_gd());
 
-                gd_wnd.add_child(gd_painter.clone().upcast());
-                gd_painter.set_owner(gd_wnd.clone().upcast());
+                gd_wnd.add_child(gd_painter.clone());
+                gd_painter.set_owner(gd_wnd.clone());
 
                 // Bind window close request.
                 let close_req = viewport.close_request.clone();
@@ -1162,7 +1162,7 @@ impl EguiBridge {
                 // - fullsize_content_view
                 // - drag_and_drop
 
-                use engine::window::Flags;
+                use classes::window::Flags;
 
                 if builder.active.is_some_and(|x| x) {
                     gd_wnd.grab_focus();
@@ -1312,8 +1312,7 @@ impl EguiBridge {
 
             let info = &mut viewport.info;
 
-            let inner_pos =
-                Vector2::from_vector2i(gd_wnd.get_position()) + surface.painter.get_position();
+            let inner_pos = gd_wnd.get_position().cast_float() + surface.painter.get_position();
             let inner_size = surface.painter.get_size();
 
             let gd_ds = DisplayServer::singleton();

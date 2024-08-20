@@ -1,6 +1,6 @@
 use egui::{ahash::HashMap, DragAndDrop, ViewportId};
 use godot::{
-    engine::{
+    classes::{
         self,
         control::{FocusMode, LayoutPreset, MouseFilter},
         notify::ControlNotification,
@@ -23,7 +23,7 @@ pub struct TextureLibrary {
 }
 
 struct TextureDescriptor {
-    gd_src_img: Gd<engine::Image>,
+    gd_src_img: Gd<classes::Image>,
     gd_tex: Gd<ImageTexture>,
 }
 
@@ -45,7 +45,7 @@ impl TextureLibrary {
                     }
 
                     // payload.as_mut_slice().copy;
-                    engine::image::Format::RGBA8
+                    classes::image::Format::RGBA8
                 }
                 egui::ImageData::Font(x) => {
                     let dst = payload.as_mut_slice();
@@ -55,11 +55,11 @@ impl TextureLibrary {
                         i.copy_from_slice(&color);
                     }
 
-                    engine::image::Format::RGBA8
+                    classes::image::Format::RGBA8
                 }
             };
 
-            let Some(src_image) = godot::engine::Image::create_from_data(
+            let Some(src_image) = godot::classes::Image::create_from_data(
                 src.image.width() as _,
                 src.image.height() as _,
                 false,
@@ -84,7 +84,7 @@ impl TextureLibrary {
             tex.gd_src_img
                 .blit_rect(src_image, Rect2i::new(Vector2i::ZERO, src_size), dst_pos);
         } else {
-            let Some(gd_tex) = engine::ImageTexture::create_from_image(src_image.clone()) else {
+            let Some(gd_tex) = classes::ImageTexture::create_from_image(src_image.clone()) else {
                 godot_error!("Failed to create texture from image!");
                 return;
             };
@@ -140,7 +140,7 @@ pub(crate) struct EguiViewportBridge {
     canvas_items: Vec<Rid>,
 
     /// Cached ui scale
-    #[init(default = 1.0)]
+    #[init(val = 1.0)]
     ui_scale_cache: f32,
 }
 
@@ -207,7 +207,7 @@ impl IControl for EguiViewportBridge {
         }
     }
 
-    fn input(&mut self, event: Gd<engine::InputEvent>) {
+    fn input(&mut self, event: Gd<classes::InputEvent>) {
         let mut may_drop_payload = false;
 
         if self.try_consume_input(event) {
@@ -229,7 +229,7 @@ impl IControl for EguiViewportBridge {
         }
     }
 
-    fn gui_input(&mut self, event: Gd<engine::InputEvent>) {
+    fn gui_input(&mut self, event: Gd<classes::InputEvent>) {
         if self.viewport_id == Some(ViewportId::ROOT) {
             // See `input` method.
             return;
@@ -275,7 +275,7 @@ impl EguiViewportBridge {
     ///
     /// NOTE: This was separated from virtual `input` method, to make `tool` input
     /// handling available.
-    pub fn try_consume_input(&mut self, event: Gd<engine::InputEvent>) -> bool {
+    pub fn try_consume_input(&mut self, event: Gd<classes::InputEvent>) -> bool {
         let Some(ctx) = &self.context else {
             return false;
         };

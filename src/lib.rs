@@ -18,7 +18,7 @@ pub use context::EguiBridge;
 pub use egui::{ViewportBuilder, ViewportId};
 
 pub mod helpers {
-    use godot::{engine::WeakRef, global, prelude::*};
+    use godot::{classes::WeakRef, global, prelude::*};
 
     pub trait ToCounterpart {
         type Counterpart;
