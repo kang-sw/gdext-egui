@@ -2,12 +2,12 @@ use std::{cell::Cell, rc::Rc};
 
 use gdext_egui::{context::FnEguiDrawExt, egui, EguiBridge};
 use godot::{
-    engine::{EditorInterface, EditorPlugin, IEditorPlugin},
+    classes::{EditorInterface, EditorPlugin, IEditorPlugin},
     prelude::*,
 };
 
 #[derive(GodotClass)]
-#[class(base = EditorPlugin, editor_plugin, tool, init)]
+#[class(base = EditorPlugin, tool, init)]
 pub struct TestEguiPlugin {
     base: Base<EditorPlugin>,
     egui: Option<Gd<EguiBridge>>,
@@ -42,7 +42,7 @@ impl IEditorPlugin for TestEguiPlugin {
 
         let edt = EditorInterface::singleton();
         let mut main_screen = edt.get_editor_main_screen().unwrap();
-        main_screen.add_child(egui.clone().upcast());
+        main_screen.add_child(egui);
 
         egui.bind().sync_root_region(Some(main_screen.upcast()));
         self.make_visible(false);

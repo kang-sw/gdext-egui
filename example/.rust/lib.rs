@@ -8,7 +8,7 @@ use std::sync::{
 
 use gdext_egui::{egui, EguiBridge, ViewportBuilder, ViewportId};
 use godot::{
-    engine::{self, CanvasLayer, ICanvasLayer},
+    classes::{self, CanvasLayer, ICanvasLayer},
     prelude::*,
 };
 struct MyExtension;
@@ -31,7 +31,7 @@ struct Showcase {
     ///
     /// If you want to call [`egui::Context::show_viewport_immediate`] method in any way,
     /// you should not create more than single [`EguiBridge`] in the scene tree.
-    #[init(default = OnReady::manual())]
+    #[init(val = OnReady::manual())]
     egui: OnReady<Gd<EguiBridge>>,
 
     demos: egui_demo_lib::DemoWindows,
@@ -44,8 +44,8 @@ impl INode for Showcase {
 
         // `EguiBridge` MUST be registered in scene tree to work properly!
         let mut gd_self = self.to_gd();
-        gd_self.add_child(self.egui.clone().upcast());
-        self.egui.set_owner(gd_self.upcast());
+        gd_self.add_child(&*self.egui);
+        self.egui.set_owner(&gd_self);
     }
 
     fn process(&mut self, _d: f64) {
@@ -66,7 +66,7 @@ struct WidgetExample {
     base: Base<Node>,
 
     /// This should be set from editor
-    #[init(default = OnReady::manual())]
+    #[init(val = OnReady::manual())]
     egui: OnReady<Gd<EguiBridge>>,
 }
 
@@ -82,8 +82,8 @@ impl INode for WidgetExample {
         self.egui.init(EguiBridge::new_alloc());
 
         let mut gd_self = self.to_gd();
-        gd_self.add_child(self.egui.clone().upcast());
-        self.egui.set_owner(gd_self.upcast());
+        gd_self.add_child(&*self.egui);
+        self.egui.set_owner(&gd_self);
 
         // Let all subwindow has native representation.
         self.base()
@@ -160,7 +160,7 @@ impl ICanvasLayer for ToolTest {
         let egui = egui.bind();
         let ctx = egui.current_frame();
 
-        let time = engine::Time::singleton();
+        let time = classes::Time::singleton();
         let tick = time.get_ticks_usec() as f64 / 1e6;
         let count = self.count.clone();
 

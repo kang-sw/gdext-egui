@@ -11,14 +11,7 @@ name = "gdext_egui_example"
 path = "lib.rs"
 
 [dependencies]
-godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
+godot = { git = "https://github.com/godot-rust/gdext", tag = "v0.2.2" }
 gdext-egui = { path = "../.." }
 
-egui_demo_lib = { git = "https://github.com/emilk/egui.git", tag = "0.27.2" }
-
-[patch.crates-io]
-egui = { git = "https://github.com/emilk/egui.git", tag = "0.27.2" }
-egui_extras = { git = "https://github.com/emilk/egui.git", tag = "0.27.2" }
-
-# [patch."https://github.com/godot-rust/gdext"]
-# godot = { path = "gdext/godot" }
+egui_demo_lib = "0.30"
