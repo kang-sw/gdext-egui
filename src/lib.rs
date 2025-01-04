@@ -17,7 +17,7 @@ pub use context::EguiBridge;
 pub use egui::{ViewportBuilder, ViewportId};
 
 pub mod helpers {
-    use godot::{engine::WeakRef, prelude::*};
+    use godot::{classes::WeakRef, prelude::*};
 
     pub trait ToCounterpart {
         type Counterpart;
@@ -109,7 +109,7 @@ pub mod helpers {
     }
 
     pub fn downgrade_gd<T: GodotClass>(gd: Gd<T>) -> Gd<WeakRef> {
-        utilities::weakref(gd.to_variant()).try_to().unwrap()
+        godot::global::weakref(&gd.to_variant()).try_to().unwrap()
     }
 
     pub fn try_upgrade_gd<T: GodotClass>(gd: Gd<WeakRef>) -> Option<Gd<T>> {

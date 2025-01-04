@@ -1,13 +1,13 @@
 use egui::{ahash::HashMap, DragAndDrop};
 use godot::{
-    engine::{
+    classes::{
         self,
         control::{FocusMode, LayoutPreset},
-        global::{self, KeyModifierMask},
         notify::ControlNotification,
         Control, DisplayServer, IControl, ImageTexture, InputEventKey, InputEventMouse,
         InputEventMouseButton, InputEventMouseMotion, RenderingServer,
     },
+    global::{self, KeyModifierMask},
     prelude::*,
 };
 use itertools::multizip;
@@ -23,7 +23,7 @@ pub struct TextureLibrary {
 }
 
 struct TextureDescriptor {
-    gd_src_img: Gd<engine::Image>,
+    gd_src_img: Gd<classes::Image>,
     gd_tex: Gd<ImageTexture>,
 }
 
@@ -45,7 +45,7 @@ impl TextureLibrary {
                     }
 
                     // payload.as_mut_slice().copy;
-                    engine::image::Format::RGBA8
+                    classes::image::Format::RGBA8
                 }
                 egui::ImageData::Font(x) => {
                     let dst = payload.as_mut_slice();
@@ -55,16 +55,16 @@ impl TextureLibrary {
                         i.copy_from_slice(&color);
                     }
 
-                    engine::image::Format::RGBA8
+                    classes::image::Format::RGBA8
                 }
             };
 
-            let Some(src_image) = godot::engine::Image::create_from_data(
+            let Some(src_image) = godot::classes::Image::create_from_data(
                 src.image.width() as _,
                 src.image.height() as _,
                 false,
                 format,
-                payload,
+                &payload,
             ) else {
                 godot_error!("Failed to create image from data!");
                 return;
@@ -82,9 +82,9 @@ impl TextureLibrary {
             let dst_pos = Vector2i::new(pos[0] as _, pos[1] as _);
 
             tex.gd_src_img
-                .blit_rect(src_image, Rect2i::new(Vector2i::ZERO, src_size), dst_pos);
+                .blit_rect(&src_image, Rect2i::new(Vector2i::ZERO, src_size), dst_pos);
         } else {
-            let Some(gd_tex) = engine::ImageTexture::create_from_image(src_image.clone()) else {
+            let Some(gd_tex) = classes::ImageTexture::create_from_image(&src_image) else {
                 godot_error!("Failed to create texture from image!");
                 return;
             };
@@ -123,7 +123,7 @@ impl TextureLibrary {
 
 /// Represents a spawned viewport
 #[derive(GodotClass)]
-#[class(base=Control, tool, init, hidden, rename=INTERNAL__GodotEguiViewportBridge)]
+#[class(base=Control, tool, init, internal, rename=INTERNAL__GodotEguiViewportBridge)]
 pub(crate) struct EguiViewportBridge {
     base: Base<Control>,
 
@@ -137,7 +137,7 @@ pub(crate) struct EguiViewportBridge {
     canvas_items: Vec<Rid>,
 
     /// Cached ui scale
-    #[init(default = 1.0)]
+    #[init(val = 1.0)]
     ui_scale_cache: f32,
 }
 
@@ -192,26 +192,26 @@ impl IControl for EguiViewportBridge {
 
     fn on_notification(&mut self, what: ControlNotification) {
         match what {
-            ControlNotification::FocusEnter => {
+            ControlNotification::FOCUS_ENTER => {
                 self.on_event(egui::Event::WindowFocused(true));
             }
-            ControlNotification::FocusExit => {
+            ControlNotification::FOCUS_EXIT => {
                 self.on_event(egui::Event::WindowFocused(false));
             }
-            ControlNotification::MouseExit => {
+            ControlNotification::MOUSE_EXIT => {
                 self.on_event(egui::Event::PointerGone);
             }
             _ => (),
         }
     }
 
-    fn input(&mut self, event: Gd<engine::InputEvent>) {
+    fn input(&mut self, event: Gd<classes::InputEvent>) {
         if self.try_consume_input(event) {
             self.mark_input_handled();
         }
     }
 
-    fn gui_input(&mut self, event: Gd<engine::InputEvent>) {
+    fn gui_input(&mut self, event: Gd<classes::InputEvent>) {
         if self.try_consume_input(event) {
             self.base_mut().accept_event();
         }
@@ -240,7 +240,7 @@ impl EguiViewportBridge {
     ///
     /// NOTE: This was separated from virtual `input` method, to make `tool` input
     /// handling available.
-    pub fn try_consume_input(&mut self, event: Gd<engine::InputEvent>) -> bool {
+    pub fn try_consume_input(&mut self, event: Gd<classes::InputEvent>) -> bool {
         let Some(ctx) = &self.context else {
             return false;
         };
@@ -333,7 +333,7 @@ impl EguiViewportBridge {
                         if modifiers.matches_logically(egui::Modifiers::CTRL) {
                             // Zoom value should be in range -1 ~ 1 => B^(powf)
                             const B: f32 = 2.0;
-                            self.on_event(egui::Event::Zoom(B.powf(delta)));
+                            // self.on_event(egui::Event::Zoom(B.powf(delta)));
                         } else {
                             let delta = if modifiers.shift_only() {
                                 // Horizontal
@@ -344,12 +344,14 @@ impl EguiViewportBridge {
                                 None
                             };
 
-                            if let Some(delta) = delta {
+                            if let Some(_delta) = delta {
                                 const SCROLL_AMOUNT: f32 = 100.;
 
-                                self.on_event(egui::Event::Scroll(
-                                    egui::Vec2::from(delta) * SCROLL_AMOUNT,
-                                ));
+                                // TODO: in 0.30, `Scroll` event seems removed. Check if sending
+                                // `MouseWheel` event is sufficient.
+
+                                //self.on_event(egui::Event::( egui::Vec2::from(delta) *
+                                // SCROLL_AMOUNT, ));
                             }
                         }
                     }
@@ -485,11 +487,11 @@ impl EguiViewportBridge {
 
             let mut verts = PackedVector2Array::new();
             let mut uvs = PackedVector2Array::new();
-            let mut cologd_rs = PackedColorArray::new();
+            let mut colors = PackedColorArray::new();
             let mut indices = PackedInt32Array::new();
 
             verts.resize(mesh.vertices.len());
-            cologd_rs.resize(mesh.vertices.len());
+            colors.resize(mesh.vertices.len());
             uvs.resize(mesh.vertices.len());
 
             indices.resize(mesh.indices.len());
@@ -498,7 +500,7 @@ impl EguiViewportBridge {
                 mesh.vertices.as_slice(),
                 verts.as_mut_slice(),
                 uvs.as_mut_slice(),
-                cologd_rs.as_mut_slice(),
+                colors.as_mut_slice(),
             )) {
                 d_vert.x = src.pos.x * scale;
                 d_vert.y = src.pos.y * scale;
@@ -530,9 +532,9 @@ impl EguiViewportBridge {
                 .done();
 
             gd_rs
-                .canvas_item_add_triangle_array_ex(rid_item, indices, verts, cologd_rs)
+                .canvas_item_add_triangle_array_ex(rid_item, &indices, &verts, &colors)
                 .texture(texture.get_rid())
-                .uvs(uvs)
+                .uvs(&uvs)
                 .done();
 
             #[cfg(any())] // Clip rect vis for debugging purpose.
