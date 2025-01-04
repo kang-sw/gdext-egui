@@ -9,18 +9,9 @@
 In Cargo.toml, under the `[dependencies]` tab
 
 ```toml
-godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
-gdext-egui = { git = "https://github.com/kang-sw/gdext-egui", branch = "master" }
+godot = { git = "https://github.com/godot-rust/gdext", tag = "v0.2.2" }
+gdext-egui = { git = "https://github.com/kang-sw/gdext-egui", tag = "v0.2.0" }
 ```
-
-> ## NOTE
->
-> If any API breakage from `gdext` master branch crate causes compilation error from this crate, you can add below line to `Cargo.toml` to make it compatible with current(2024-02-23 16:07:10) dependency version:
->
-> ```toml
-> [patch.crates-io]
-> godot = { git = "https://github.com/godot-rust/gdext", rev = "6614030150950ffa6bd0311a2b914b86d5b7e9e9" }
-> ```
 
 In Rust, write a GodotClass derivative like this:
 
