@@ -3,7 +3,10 @@ use std::{
     collections::{hash_map, HashSet, VecDeque},
     mem::take,
     sync::{
-        atomic::{AtomicBool, AtomicU8, Ordering::Relaxed},
+        atomic::{
+            AtomicBool, AtomicU8,
+            Ordering::{self, Relaxed},
+        },
         mpsc, Arc,
     },
     thread::ThreadId,
@@ -72,27 +75,25 @@ pub struct EguiBridge {
     /// Determines the cursor shape of this frame.
     cursor_shape: RefCell<Option<egui::CursorIcon>>,
 
-    /// Handle to tesselation worker thread
-    thr_bg_worker: Cell<Option<std::thread::JoinHandle<()>>>,
-
     /// Handle to tesselation worker tx channel
-    tx_bg_task: RefCell<Option<mpsc::Sender<BackgroundWorkCommand>>>,
+    tx_bg_task: RefCell<Option<mpsc::Sender<DeferredCommand>>>,
+    rx_bg_task: RefCell<Option<mpsc::Receiver<DeferredCommand>>>,
 
     /// A object that root region is being synced.
     root_region_sync: Cell<Option<Gd<WeakRef>>>,
 
-    /// non-send + non-sync
+    /// callbacks for widgets rendering.
+    widget_callbacks_first: RefCell<Vec<(i32, Box<FnWidgetCallback>)>>,
+    widget_callbacks_last: RefCell<Vec<(i32, Box<FnWidgetCallback>)>>,
+
+    /// non-send + non-sync even when threading is implemented for godot objects ...
     _non_send_sync: std::marker::PhantomData<*const ()>,
 }
 
-enum BackgroundWorkCommand {
+type FnWidgetCallback = dyn FnMut(&egui::Context) -> WidgetRetain + 'static;
+
+enum DeferredCommand {
     RequestRepaint(ViewportId),
-    Tessellate(
-        Vec<egui::epaint::ClippedShape>,
-        f32,
-        oneshot::Sender<Vec<egui::ClippedPrimitive>>,
-    ),
-    Close, // Close the worker thread channel.
 }
 
 #[derive(Clone)]
@@ -108,6 +109,9 @@ struct SurfaceContext {
 #[educe(Default)]
 struct SharedContext {
     egui: egui::Context,
+
+    /// Repaint was queued.
+    repaint_queued: AtomicBool,
 
     /// Detects whether to start new frame.
     frame_started: AtomicBool,
@@ -158,7 +162,7 @@ struct ViewportContext {
     updates: Vec<egui::ViewportCommand>,
 
     /// Paint commands that is being applied,
-    paint_this_frame: Option<oneshot::Receiver<Vec<egui::ClippedPrimitive>>>,
+    paint_this_frame: Option<Vec<egui::ClippedPrimitive>>,
 
     /// Logical zoom rate requested by user. The painter will accept and rescale event
     /// position and paintings to fit the zoom rate.
@@ -238,9 +242,17 @@ impl From<()> for WidgetRetain {
 #[godot_api]
 impl ICanvasLayer for EguiBridge {
     fn process(&mut self, _dt: f64) {
+        self.handle_bg_message();
+
+        if self.share.repaint_queued.swap(false, Relaxed) {
+            self.current_frame();
+        }
+
         if self.share.is_in_frame() {
             self.finish_frame();
         }
+
+        self.handle_bg_message();
     }
 
     fn enter_tree(&mut self) {
@@ -401,6 +413,52 @@ impl EguiBridge {
         self.queue_try_start_frame();
     }
 
+    /// Registers callback for widget rendering at frame start.
+    ///
+    /// See also [`FnEguiDrawExt`] decorator for every method with signature
+    /// `impl FnMut(&egui::Context) -> impl Into<WidgetRetain> + 'static`
+    ///
+    /// Callbacks registered with lower priority will be called earlier.
+    pub fn register_render_callback_first<L>(&self, priority: i32, widget: impl FnEguiDraw<L>)
+    where
+        L: Into<WidgetRetain>,
+    {
+        self.impl_push_panel_item(true, priority, widget);
+    }
+
+    /// Registers callback for widget rendering at frame end.
+    ///
+    /// See also [`FnEguiDrawExt`] decorator for every method with signature
+    /// `impl FnMut(&egui::Context) -> impl Into<WidgetRetain> + 'static`
+    ///
+    /// Callbacks registered with lower priority will be called earlier.
+    pub fn register_render_callback_last<L>(&self, priority: i32, widget: impl FnEguiDraw<L>)
+    where
+        L: Into<WidgetRetain>,
+    {
+        self.impl_push_panel_item(false, priority, widget);
+    }
+
+    /// Registers callback for widget rendering, at very first of the frame start.
+    fn impl_push_panel_item<L>(&self, first: bool, priority: i32, mut widget: impl FnEguiDraw<L>)
+    where
+        L: Into<WidgetRetain>,
+    {
+        let show = Box::new(move |ui: &_| widget(ui).into());
+        let mut arr = if first {
+            self.widget_callbacks_first.borrow_mut()
+        } else {
+            self.widget_callbacks_last.borrow_mut()
+        };
+
+        let insert_index = arr
+            .binary_search_by_key(&priority, |(p, ..)| *p)
+            .unwrap_or_else(|x| x);
+
+        arr.insert(insert_index, (priority, show));
+        self.share.repaint_queued.store(true, Relaxed);
+    }
+
     /// Spawn new viewport as child of existing node. If specified parent node is behind
     /// other node, the input may work naturally as the egui surface always intercepts any
     /// GUI input. It is advised to use this method for any node that lays over any other
@@ -435,27 +493,10 @@ impl EguiBridge {
 
         // Spawn background worker thread
         {
-            let (tx_b, rx_b) = std::sync::mpsc::channel::<BackgroundWorkCommand>();
-            let ctx = self.share.egui.clone();
-            let th = std::thread::spawn(move || loop {
-                // Channel is always valid until `Close` command is received. Otherwise,
-                // it's a bug where `_exit_tree` is not invoked from engine.
-                let msg = rx_b.recv().expect("unexpected channel close");
-
-                match msg {
-                    BackgroundWorkCommand::RequestRepaint(viewport_id) => {
-                        ctx.request_repaint_of(viewport_id);
-                    }
-                    BackgroundWorkCommand::Tessellate(shapes, ppi, tx_response) => {
-                        let primitives = ctx.tessellate(shapes, ppi);
-                        tx_response.send(primitives).ok();
-                    }
-                    BackgroundWorkCommand::Close => break,
-                }
-            });
+            let (tx_b, rx_b) = std::sync::mpsc::channel::<DeferredCommand>();
 
             assert!(self.tx_bg_task.replace(Some(tx_b)).is_none());
-            assert!(self.thr_bg_worker.replace(Some(th)).is_none());
+            assert!(self.rx_bg_task.replace(Some(rx_b)).is_none());
         };
 
         // Setup egui context & repaint callback.
@@ -478,28 +519,43 @@ impl EguiBridge {
         });
     }
 
+    fn handle_bg_message(&self) {
+        let Some(rx_b) = self.rx_bg_task.borrow_mut().take() else {
+            return;
+        };
+
+        let ctx = self.share.egui.clone();
+
+        for msg in rx_b.try_iter() {
+            match msg {
+                DeferredCommand::RequestRepaint(viewport_id) => {
+                    ctx.request_repaint_of(viewport_id);
+                }
+            }
+        }
+
+        self.rx_bg_task.replace(Some(rx_b));
+    }
+
     fn try_dispose(&mut self) {
         // Join background worker thread. To do this, channel should be closed first.
-        let Some(bg) = self.tx_bg_task.take() else {
+        let Some(_bg) = self.tx_bg_task.take() else {
             // Service is just not initialized.
             return;
         };
 
-        bg.send(BackgroundWorkCommand::Close)
-            .expect("channel closed prematurely");
+        self.rx_bg_task.take();
 
-        let bg_thr = self.thr_bg_worker.take().expect("thread not spawned");
-        bg_thr.join().expect("thread panicked");
+        // XXX: Seems all these manual cleanup redundant; as they're all in the tree?
 
-        // Cleanup all godot resources
-        self.textures.clear();
+        // self.textures.clear();
 
-        self.share.viewports.lock().clear();
-        self.share.spawned_viewports.lock().clear();
+        // self.share.viewports.lock().clear();
+        // self.share.spawned_viewports.lock().clear();
 
-        for (_, surface) in self.surfaces.borrow_mut().drain() {
-            Self::free_surface(Some(surface));
-        }
+        // for (_, surface) in self.surfaces.borrow_mut().drain() {
+        //     Self::free_surface(Some(surface));
+        // }
     }
 
     fn try_start_frame(&self) {
@@ -630,10 +686,35 @@ impl EguiBridge {
 
         self.viewport_start_frame(egui::ViewportId::ROOT);
 
-        // NOTE: Implementation is too long, thus splitting it into another function.
+        // Call registered callbacks for start of the frames.
+        self.invoke_registered_callbacks(true);
+    }
 
-        // Handle spawned widgets most first; as it should not be affected by any other controls!
-        // self._start_frame_handle_widgets();
+    fn invoke_registered_callbacks(&self, first: bool) {
+        let get_cb = || {
+            if first {
+                self.widget_callbacks_first.borrow_mut()
+            } else {
+                self.widget_callbacks_last.borrow_mut()
+            }
+        };
+
+        let mut callbacks = { take(&mut *get_cb()) };
+
+        // We release borrow here to make callbacks safely invoke
+        // `register_render_callback_*` methods.
+
+        callbacks.retain_mut(|(_, cb)| !cb(&self.share.egui).disposed());
+
+        let mut cbs = get_cb();
+        let should_sort = !cbs.is_empty() && !callbacks.is_empty();
+
+        if should_sort {
+            cbs.extend(callbacks);
+            cbs.sort_by_key(|(p, ..)| *p);
+        } else {
+            *cbs = callbacks;
+        }
     }
 
     fn reset_root_region_sync(&self) {
@@ -654,7 +735,10 @@ impl EguiBridge {
         let share = self.share.clone();
 
         /* ------------------------- Spawned Widget / Viewport Handling ------------------------- */
+        // Deal with registered callbacks for frame end.
+        self.invoke_registered_callbacks(false);
 
+        // Deal with spawned viewports.
         let viewports = take(&mut *share.spawned_viewports.lock()).tap_mut(|viewports| {
             // Check if any of the spawned viewports should be disposed.
             viewports.retain(|id, value| {
@@ -847,7 +931,7 @@ impl EguiBridge {
 
         // Paint all viewports
         for (id, mut paint) in self.surfaces.borrow_mut().clone() {
-            let Some((rx_primitives, ui_scale)) = self
+            let Some((primitives, ui_scale)) = self
                 .share
                 .viewports
                 .lock()
@@ -856,14 +940,6 @@ impl EguiBridge {
                 .pipe(|vp| vp.paint_this_frame.take().map(|x| (x, vp.target_ui_scale)))
             else {
                 // This viewport is not re-rendered this frame.
-                continue;
-            };
-
-            // Wait for tesselation result synchronously.
-            let Ok(primitives) = rx_primitives.recv_timeout(Duration::from_secs(5)) else {
-                godot_warn!(
-                    "Tesselation result for viewport {id:?} is not received within 5 seconds"
-                );
                 continue;
             };
 
@@ -997,12 +1073,12 @@ impl EguiBridge {
             let ctx = self.share.egui.clone();
             gd_painter.bind_mut().initiate(
                 ctx.clone(),
+                id,
                 Box::new(move |ev| {
                     // NOTE: cloning egui context into this closure doesn't make cyclic reference
                     // - Both are field of `Self`, which does not refer to each other.
 
                     tx_viewport.send(ev).ok(); // Failing this is just okay.
-                    ctx.request_repaint_of(id);
                 }),
             );
 
@@ -1014,7 +1090,7 @@ impl EguiBridge {
                     // call `Context::request_repaint` method on context object to prevent
                     // deadlock, as we're not sure when this bound method is called. (it
                     // actually deadlocks on widget initialization)
-                    tx.send(BackgroundWorkCommand::RequestRepaint(id)).ok();
+                    tx.send(DeferredCommand::RequestRepaint(id)).ok();
                     Ok(Variant::nil())
                 }),
             );
@@ -1245,8 +1321,7 @@ impl EguiBridge {
 
             let info = &mut viewport.info;
 
-            let inner_pos =
-                Vector2::from_vector2i(gd_wnd.get_position()) + surface.painter.get_position();
+            let inner_pos = gd_wnd.get_position().cast_float() + surface.painter.get_position();
             let inner_size = surface.painter.get_size();
 
             let gd_ds = DisplayServer::singleton();
@@ -1337,26 +1412,16 @@ impl EguiBridge {
         let paints = take(&mut output.shapes);
         let ppi = output.pixels_per_point;
 
-        // Que async tesselation jobs to Rayon.
-        let (tx, rx) = oneshot::channel();
-
+        let primitives = self.share.egui.tessellate(paints, ppi);
         self.share
             .viewports
             .lock()
             .get_mut(&id)
             .unwrap()
             .pipe(|vp| {
-                vp.paint_this_frame = Some(rx);
+                vp.paint_this_frame = Some(primitives);
                 vp.target_ui_scale = ppi;
             });
-
-        // Offload tesselation from game thread.
-        self.tx_bg_task
-            .borrow()
-            .as_ref()
-            .unwrap()
-            .send(BackgroundWorkCommand::Tessellate(paints, ppi, tx))
-            .expect("Background task wasn't started.");
 
         let mut gd_wnd = self
             .surfaces
@@ -1446,6 +1511,7 @@ impl SharedContext {
     fn repaint(&self, info: egui::RequestRepaintInfo) {
         if let Some(x) = self.viewports.lock().get_mut(&info.viewport_id) {
             x.repaint_at = Some(Instant::now() + info.delay);
+            self.repaint_queued.store(true, Relaxed);
         } else {
             godot_warn!("EGUI requested repaint for unregistered viewpot: {info:?}")
         };
@@ -1462,4 +1528,122 @@ impl SharedContext {
     fn finish_frame(&self) {
         self.frame_started.store(false, Relaxed);
     }
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                         WIDGET SUPPORT                                         */
+/* ---------------------------------------------------------------------------------------------- */
+
+/* ----------------------------------------- Decorators ----------------------------------------- */
+
+/// Base trait for all widget callbacks.
+pub trait FnEguiDraw<R>: FnMut(&egui::Context) -> R + 'static
+where
+    R: Into<WidgetRetain>,
+{
+}
+
+impl<T, R> FnEguiDraw<R> for T
+where
+    T: FnMut(&egui::Context) -> R + 'static,
+    R: Into<WidgetRetain> + 'static,
+{
+}
+
+/* ------------------------------------- Expiration Sentinel ------------------------------------ */
+
+pub trait CheckExpired: 'static {
+    fn expired(&self) -> bool;
+}
+
+impl<T: 'static> CheckExpired for std::rc::Weak<T> {
+    fn expired(&self) -> bool {
+        self.strong_count() == 0
+    }
+}
+
+impl<T: 'static> CheckExpired for std::sync::Weak<T> {
+    fn expired(&self) -> bool {
+        self.strong_count() == 0
+    }
+}
+
+impl CheckExpired for std::sync::Arc<AtomicBool> {
+    fn expired(&self) -> bool {
+        !self.load(Ordering::Relaxed)
+    }
+}
+
+impl<T: GodotClass> CheckExpired for Gd<T> {
+    fn expired(&self) -> bool {
+        self.is_instance_valid()
+    }
+}
+
+impl CheckExpired for std::rc::Rc<std::cell::Cell<bool>> {
+    fn expired(&self) -> bool {
+        !self.get()
+    }
+}
+
+impl CheckExpired for bool {
+    fn expired(&self) -> bool {
+        !*self
+    }
+}
+
+/* ------------------------------------------ Extension ----------------------------------------- */
+
+/// Various utilities to extend the widget callback.
+pub trait FnEguiDrawExt<L: Into<WidgetRetain>>: Sized + FnEguiDraw<L> {
+    /// Set the expiration time of the widget. If the widget is not disposed after the given
+    /// system time, it'll be disposed automatically.
+    fn expires_at(mut self, expiration: Instant) -> impl FnEguiDrawExt<WidgetRetain> {
+        move |ctx: &egui::Context| {
+            if Instant::now() > expiration {
+                WidgetRetain::Dispose
+            } else {
+                self(ctx).into()
+            }
+        }
+    }
+
+    /// Set the expiration time of the widget. If the widget is not disposed after the given
+    /// time, it'll be disposed automatically.
+    fn bind<C: CheckExpired>(mut self, expired: C) -> impl FnEguiDrawExt<WidgetRetain> {
+        move |ctx: &egui::Context| {
+            if expired.expired() {
+                WidgetRetain::Dispose
+            } else {
+                self(ctx).into()
+            }
+        }
+    }
+
+    /// Trigger the widget only once. After the first call, the widget will be disposed.
+    fn once(mut self) -> impl FnEguiDrawExt<WidgetRetain> {
+        move |ctx: &egui::Context| {
+            // Only the first call will be executed.
+            let _ = self(ctx).into();
+            WidgetRetain::Dispose
+        }
+    }
+
+    /// Set the lifespan of the widget. If the widget is not disposed after the given
+    /// time, it'll be disposed automatically.
+    ///
+    /// # Warning
+    ///
+    /// The time is not game delta time, but the system time: Which means, even if you
+    /// stopped the game, the widget will be disposed after the given 'real' time.
+    fn lifespan(self, duration: Duration) -> impl FnEguiDrawExt<WidgetRetain> {
+        self.expires_at(Instant::now() + duration)
+    }
+}
+
+impl<T, L> FnEguiDrawExt<L> for T
+where
+    T: FnMut(&egui::Context) -> L + 'static,
+    L: Into<WidgetRetain> + 'static,
+{
 }

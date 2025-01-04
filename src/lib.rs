@@ -10,6 +10,7 @@ macro_rules! symbol_string {
 
 pub mod context;
 mod surface;
+pub mod widgets;
 
 pub extern crate egui;
 
@@ -17,7 +18,7 @@ pub use context::EguiBridge;
 pub use egui::{ViewportBuilder, ViewportId};
 
 pub mod helpers {
-    use godot::{classes::WeakRef, prelude::*};
+    use godot::{classes::WeakRef, global, prelude::*};
 
     pub trait ToCounterpart {
         type Counterpart;

@@ -1,8 +1,8 @@
-use egui::{ahash::HashMap, DragAndDrop};
+use egui::{ahash::HashMap, DragAndDrop, ViewportId};
 use godot::{
     classes::{
         self,
-        control::{FocusMode, LayoutPreset},
+        control::{FocusMode, LayoutPreset, MouseFilter},
         notify::ControlNotification,
         Control, DisplayServer, IControl, ImageTexture, InputEventKey, InputEventMouse,
         InputEventMouseButton, InputEventMouseMotion, RenderingServer,
@@ -109,7 +109,7 @@ impl TextureLibrary {
         };
     }
 
-    pub fn clear(&mut self) {
+    pub fn _clear(&mut self) {
         // RefCounted object doesn't need to be freed manually.
         self.textures.clear();
     }
@@ -127,6 +127,9 @@ impl TextureLibrary {
 pub(crate) struct EguiViewportBridge {
     base: Base<Control>,
 
+    /// Viewport ID of self.
+    viewport_id: Option<egui::ViewportId>,
+
     /// Any GUI event will be forwarded to this.
     fwd_event: Option<Box<dyn Fn(egui::Event)>>,
 
@@ -143,6 +146,16 @@ pub(crate) struct EguiViewportBridge {
 
 #[godot_api]
 impl IControl for EguiViewportBridge {
+    fn ready(&mut self) {
+        self.base_mut().tap_mut(|b| {
+            // Makes node to fill the whole available space
+            b.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
+
+            // Make this node to be focusable
+            b.set_focus_mode(FocusMode::CLICK);
+        });
+    }
+
     fn can_drop_data(&self, at_position: Vector2, data: Variant) -> bool {
         // We just take any type of data once dropped. Also, we don't need to check the
         // dropped position for now, it is currently tracked by egui context, and returns
@@ -170,17 +183,6 @@ impl IControl for EguiViewportBridge {
         // TODO: Use `Control::force_drag` method
         Variant::nil()
     }
-
-    fn ready(&mut self) {
-        self.base_mut().tap_mut(|b| {
-            // Makes node to fill the whole available space
-            b.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
-
-            // Make this node to be focusable
-            b.set_focus_mode(FocusMode::CLICK);
-        });
-    }
-
     fn exit_tree(&mut self) {
         // Don't make it leak resource.
         let mut gd_rs = RenderingServer::singleton();
@@ -206,12 +208,33 @@ impl IControl for EguiViewportBridge {
     }
 
     fn input(&mut self, event: Gd<classes::InputEvent>) {
+        let mut may_drop_payload = false;
+
         if self.try_consume_input(event) {
+            may_drop_payload = true;
             self.mark_input_handled();
+        }
+
+        if false & may_drop_payload {
+            let filter = if self.context.as_ref().unwrap().is_pointer_over_area() {
+                // Let this widget able to take drop payload / register drag payload.
+                MouseFilter::PASS
+            } else {
+                MouseFilter::IGNORE
+            };
+
+            self.base_mut().set_mouse_filter(filter);
+        } else {
+            self.base_mut().set_mouse_filter(MouseFilter::IGNORE);
         }
     }
 
     fn gui_input(&mut self, event: Gd<classes::InputEvent>) {
+        if self.viewport_id == Some(ViewportId::ROOT) {
+            // See `input` method.
+            return;
+        }
+
         if self.try_consume_input(event) {
             self.base_mut().accept_event();
         }
@@ -222,6 +245,12 @@ impl EguiViewportBridge {
     fn on_event(&self, event: egui::Event) {
         if let Some(ev) = self.fwd_event.as_deref() {
             ev(event);
+
+            let (Some(ctx), Some(id)) = (&self.context, self.viewport_id) else {
+                unreachable!()
+            };
+
+            ctx.request_repaint_of(id);
         }
     }
 
@@ -231,9 +260,15 @@ impl EguiViewportBridge {
         }
     }
 
-    pub fn initiate(&mut self, ctx: egui::Context, on_event: Box<dyn Fn(egui::Event)>) {
+    pub fn initiate(
+        &mut self,
+        ctx: egui::Context,
+        id: egui::ViewportId,
+        on_event: Box<dyn Fn(egui::Event)>,
+    ) {
         self.context = Some(ctx);
         self.fwd_event = Some(on_event);
+        self.viewport_id = Some(id);
     }
 
     /// Try to consume the input once, and returns whether the input was consumed or not.
@@ -257,7 +292,7 @@ impl EguiViewportBridge {
                     event.upcast_ref(),
                 )));
 
-                return ctx.wants_pointer_input();
+                return ctx.is_pointer_over_area();
             }
         };
 
@@ -523,8 +558,6 @@ impl EguiViewportBridge {
             clip.min.y *= scale;
             clip.max.x *= scale;
             clip.max.y *= scale;
-
-            gd_rs.canvas_item_set_clip(rid_item, true);
 
             gd_rs
                 .canvas_item_set_custom_rect_ex(rid_item, true)

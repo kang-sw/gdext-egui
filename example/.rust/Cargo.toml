@@ -14,11 +14,11 @@ path = "lib.rs"
 godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
 gdext-egui = { path = "../.." }
 
-egui_demo_lib = { git = "https://github.com/emilk/egui.git", tag = "0.26.2" }
+egui_demo_lib = { git = "https://github.com/emilk/egui.git", tag = "0.27.2" }
 
 [patch.crates-io]
-egui = { git = "https://github.com/emilk/egui.git", tag = "0.26.2" }
-egui_extras = { git = "https://github.com/emilk/egui.git", tag = "0.26.2" }
+egui = { git = "https://github.com/emilk/egui.git", tag = "0.27.2" }
+egui_extras = { git = "https://github.com/emilk/egui.git", tag = "0.27.2" }
 
 # [patch."https://github.com/godot-rust/gdext"]
 # godot = { path = "gdext/godot" }
