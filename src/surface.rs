@@ -142,10 +142,14 @@ pub(crate) struct EguiViewportBridge {
     /// EGUI context that this viewport is associated with.
     context: Option<egui::Context>,
 
-    /// Rendered primitives: pairs of (clip_parent, draw_child) canvas items.
-    /// The clip parent has `canvas_item_set_clip(true)` and custom_rect set to the clip
-    /// rectangle; the draw child is where the actual mesh is rendered.
-    canvas_items: Vec<[Rid; 2]>,
+    /// Rendered primitives: one canvas item per clipped primitive.
+    canvas_items: Vec<Rid>,
+
+    /// Materials for shader-based clip rect, parallel to canvas_items.
+    clip_materials: Vec<Rid>,
+
+    /// Shared clip rect shader (lazily created).
+    clip_shader: Option<Rid>,
 
     /// Cached ui scale
     #[init(val = 1.0)]
@@ -195,9 +199,14 @@ impl IControl for EguiViewportBridge {
         // Don't make it leak resource.
         let mut gd_rs = RenderingServer::singleton();
 
-        for [rid_clip, rid_draw] in self.canvas_items.drain(..) {
-            gd_rs.free_rid(rid_draw);
-            gd_rs.free_rid(rid_clip);
+        for rid in self.canvas_items.drain(..) {
+            gd_rs.free_rid(rid);
+        }
+        for rid in self.clip_materials.drain(..) {
+            gd_rs.free_rid(rid);
+        }
+        if let Some(shader) = self.clip_shader.take() {
+            gd_rs.free_rid(shader);
         }
     }
 
@@ -481,48 +490,50 @@ impl EguiViewportBridge {
         let mut gd_rs = RenderingServer::singleton();
         self.ui_scale_cache = scale;
 
-        // Performs bookkeeping - Make `self.canvas_items` be same length as input shapes.
-        // Each entry is a [clip_parent, draw_child] pair. The clip parent has
-        // `canvas_item_set_clip(true)` with custom_rect matching the egui clip rectangle,
-        // and the draw child is where the actual mesh triangles are rendered.
+        // Lazily create the clip rect shader.
+        let clip_shader = *self.clip_shader.get_or_insert_with(|| {
+            let shader = gd_rs.shader_create();
+            gd_rs.shader_set_code(shader, &GString::from(CLIP_SHADER_CODE));
+            shader
+        });
+
+        // Performs bookkeeping - Make canvas_items/materials be same length as
+        // input shapes.
         {
             let rid_self_canvas = self.base().get_canvas_item();
 
             // Create missing items.
             for index in 0..shapes.len() {
                 if index >= self.canvas_items.len() {
-                    let rid_clip = gd_rs.canvas_item_create();
-                    let rid_draw = gd_rs.canvas_item_create();
+                    let rid = gd_rs.canvas_item_create();
+                    gd_rs.canvas_item_set_parent(rid, rid_self_canvas);
+                    gd_rs.canvas_item_set_draw_index(rid, index as i32);
+                    self.canvas_items.push(rid);
 
-                    gd_rs.canvas_item_set_parent(rid_clip, rid_self_canvas);
-                    gd_rs.canvas_item_set_clip(rid_clip, true);
-                    gd_rs.canvas_item_set_draw_index(rid_clip, index as i32);
-
-                    gd_rs.canvas_item_set_parent(rid_draw, rid_clip);
-
-                    self.canvas_items.push([rid_clip, rid_draw]);
+                    let mat = gd_rs.material_create();
+                    gd_rs.material_set_shader(mat, clip_shader);
+                    gd_rs.canvas_item_set_material(rid, mat);
+                    self.clip_materials.push(mat);
                 } else {
-                    let [rid_clip, rid_draw] = self.canvas_items[index];
-                    gd_rs.canvas_item_clear(rid_clip);
-                    gd_rs.canvas_item_clear(rid_draw);
+                    gd_rs.canvas_item_clear(self.canvas_items[index]);
                 }
             }
 
             // Dispose unused items.
-            for [rid_clip, rid_draw] in self
-                .canvas_items
-                .drain(shapes.len()..self.canvas_items.len())
-            {
-                gd_rs.free_rid(rid_draw);
-                gd_rs.free_rid(rid_clip);
+            for index in (shapes.len()..self.canvas_items.len()).rev() {
+                gd_rs.free_rid(self.canvas_items[index]);
+                gd_rs.free_rid(self.clip_materials[index]);
             }
+            self.canvas_items.truncate(shapes.len());
+            self.clip_materials.truncate(shapes.len());
         }
 
         // Render mesh content
 
-        for (primitive, &[rid_clip, rid_draw]) in
-            shapes.into_iter().zip(self.canvas_items.iter())
-        {
+        for (index, primitive) in shapes.into_iter().enumerate() {
+            let rid_item = self.canvas_items[index];
+            let mat = self.clip_materials[index];
+
             let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive else {
                 godot_error!("unsupported primitive");
                 continue;
@@ -572,22 +583,48 @@ impl EguiViewportBridge {
             clip.max.x *= scale;
             clip.max.y *= scale;
 
-            // Set custom rect on the clip parent so its clipping region matches
-            // the egui clip rectangle.
-            gd_rs
-                .canvas_item_set_custom_rect_ex(rid_clip, true)
-                .rect(clip.to_counterpart())
-                .done();
+            // Update clip_rect uniform on this primitive's material.
+            // Rect2 maps to vec4 as (pos.x, pos.y, size.x, size.y).
+            let clip_rect = Rect2::new(
+                Vector2::new(clip.min.x, clip.min.y),
+                Vector2::new(clip.max.x - clip.min.x, clip.max.y - clip.min.y),
+            );
+            gd_rs.material_set_param(mat, &StringName::from("clip_rect"), &clip_rect.to_variant());
 
-            // Draw the mesh on the child canvas item (which is clipped by the parent).
             gd_rs
-                .canvas_item_add_triangle_array_ex(rid_draw, &indices, &verts, &colors)
+                .canvas_item_add_triangle_array_ex(rid_item, &indices, &verts, &colors)
                 .texture(texture.get_rid())
                 .uvs(&uvs)
                 .done();
         }
     }
 }
+
+/// Canvas item shader that performs pixel-level clip rect scissoring.
+///
+/// The `clip_rect` uniform is a Rect2 (vec4): (pos.x, pos.y, size.x, size.y).
+/// Fragments outside this rectangle are discarded.
+const CLIP_SHADER_CODE: &str = r#"
+shader_type canvas_item;
+
+uniform vec4 clip_rect;
+
+varying vec2 canvas_pos;
+
+void vertex() {
+    canvas_pos = VERTEX;
+}
+
+void fragment() {
+    vec2 clip_min = clip_rect.xy;
+    vec2 clip_max = clip_rect.xy + clip_rect.zw;
+    if (canvas_pos.x < clip_min.x || canvas_pos.y < clip_min.y ||
+        canvas_pos.x > clip_max.x || canvas_pos.y > clip_max.y) {
+        discard;
+    }
+    COLOR *= texture(TEXTURE, UV);
+}
+"#;
 
 fn modifier_to_egui(modifier: KeyModifierMask) -> egui::Modifiers {
     let mut out = egui::Modifiers::default();
