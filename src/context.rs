@@ -784,8 +784,7 @@ impl EguiBridge {
 
         loop {
             // Not any lock should be held here.
-
-            viewports.extend(share.full_output.lock().viewport_output.drain());
+            viewports.extend(take(&mut share.full_output.lock().viewport_output));
 
             let Some((vp_id, vp_out)) = viewports.pop_front() else {
                 break;
@@ -1091,7 +1090,7 @@ impl EguiBridge {
                     // deadlock, as we're not sure when this bound method is called. (it
                     // actually deadlocks on widget initialization)
                     tx.send(DeferredCommand::RequestRepaint(id)).ok();
-                    Ok(Variant::nil())
+                    Variant::nil()
                 }),
             );
 
@@ -1144,9 +1143,9 @@ impl EguiBridge {
                 let close_req = viewport.close_request.clone();
                 gd_wnd.connect(
                     "close_requested",
-                    &Callable::from_local_fn("SubscribeClose", move |_| {
+                    &Callable::from_fn("SubscribeClose", move |_| {
                         close_req.store(VIEWPORT_CLOSE_REQUESTED, Relaxed);
-                        Ok(Variant::nil())
+                        Variant::nil()
                     }),
                 );
 
@@ -1402,12 +1401,12 @@ impl EguiBridge {
             }
         }
 
-        self.share.egui.begin_frame(raw_input);
+        self.share.egui.begin_pass(raw_input);
     }
 
     fn viewport_end_frame(&self, id: ViewportId) {
         // Retrieve viewport-wise output.
-        let mut output = self.share.egui.end_frame();
+        let mut output = self.share.egui.end_pass();
 
         let paints = take(&mut output.shapes);
         let ppi = output.pixels_per_point;
@@ -1441,8 +1440,7 @@ impl EguiBridge {
         // Handle platform outputs accumulated from all viewports.
         {
             let egui::PlatformOutput {
-                open_url,
-                copied_text,
+                commands,
                 events,
                 mutable_text_under_cursor,
 
@@ -1453,12 +1451,18 @@ impl EguiBridge {
 
             let mut ds = DisplayServer::singleton();
 
-            if let Some(url) = open_url {
-                open::that(url.url).ok();
-            }
-
-            if !copied_text.is_empty() {
-                ds.clipboard_set(&copied_text);
+            for cmd in commands {
+                match cmd {
+                    egui::OutputCommand::CopyText(copied_text) => {
+                        ds.clipboard_set(&copied_text);
+                    }
+                    egui::OutputCommand::CopyImage(_color_image) => {
+                        godot_warn!("gdext_egui doesn't support image clipboard copying")
+                    }
+                    egui::OutputCommand::OpenUrl(open_url) => {
+                        open::that(open_url.url).ok();
+                    }
+                }
             }
 
             if mutable_text_under_cursor {

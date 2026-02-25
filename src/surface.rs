@@ -46,17 +46,18 @@ impl TextureLibrary {
 
                     // payload.as_mut_slice().copy;
                     classes::image::Format::RGBA8
-                }
-                egui::ImageData::Font(x) => {
-                    let dst = payload.as_mut_slice();
+                } // 2026-2-25, egui::ImageData::Font variant disappeared. Leaving this variant until find out exactly what's happening ...
 
-                    for (i, color) in dst.chunks_mut(4).zip(x.srgba_pixels(None)) {
-                        let color = color.to_array();
-                        i.copy_from_slice(&color);
-                    }
+                  // egui::ImageData::Font(x) => {
+                  //     let dst = payload.as_mut_slice();
 
-                    classes::image::Format::RGBA8
-                }
+                  //     for (i, color) in dst.chunks_mut(4).zip(x.srgba_pixels(None)) {
+                  //         let color = color.to_array();
+                  //         i.copy_from_slice(&color);
+                  //     }
+
+                  //     classes::image::Format::RGBA8
+                  // }
             };
 
             let Some(src_image) = godot::classes::Image::create_from_data(
@@ -368,8 +369,9 @@ impl EguiViewportBridge {
                         if modifiers.matches_logically(egui::Modifiers::CTRL) {
                             // Zoom value should be in range -1 ~ 1 => B^(powf)
                             const B: f32 = 2.0;
-                            // self.on_event(egui::Event::Zoom(B.powf(delta)));
+                            self.on_event(egui::Event::Zoom(B.powf(delta)));
                         } else {
+                            #[cfg(any())]
                             let delta = if modifiers.shift_only() {
                                 // Horizontal
                                 Some([delta, 0.0])
@@ -379,14 +381,16 @@ impl EguiViewportBridge {
                                 None
                             };
 
+                            #[cfg(any())]
                             if let Some(_delta) = delta {
                                 const SCROLL_AMOUNT: f32 = 100.;
 
                                 // TODO: in 0.30, `Scroll` event seems removed. Check if sending
                                 // `MouseWheel` event is sufficient.
 
-                                //self.on_event(egui::Event::( egui::Vec2::from(delta) *
-                                // SCROLL_AMOUNT, ));
+                                self.on_event(egui::Event::Touch(
+                                    egui::Vec2::from(delta) * SCROLL_AMOUNT,
+                                ));
                             }
                         }
                     }
@@ -430,7 +434,7 @@ impl EguiViewportBridge {
                 let unicode = event.get_unicode();
 
                 if event.is_pressed() && unicode >= 32 {
-                    let ch = std::char::from_u32(unicode as u32).unwrap();
+                    let ch = std::char::from_u32(unicode).unwrap();
                     self.on_event(egui::Event::Text(ch.to_string()));
                 }
 

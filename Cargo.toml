@@ -7,13 +7,13 @@ edition = "2021"
 exclude = ["example/.rust"]
 
 [dependencies]
-godot = { git = "https://github.com/godot-rust/gdext", tag = "v0.2.2" }
-egui = { version = "0.30" }
+godot =  "0.4"
+egui = { version = "0.33" }
 
 itertools = "0.14"
 
 crossbeam-queue = "0.3"
-oneshot = "0.1"
+oneshot = "0.2"
 
 tap = "1"
 
