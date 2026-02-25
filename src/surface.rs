@@ -46,18 +46,20 @@ impl TextureLibrary {
 
                     // payload.as_mut_slice().copy;
                     classes::image::Format::RGBA8
-                } // 2026-2-25, egui::ImageData::Font variant disappeared. Leaving this variant until find out exactly what's happening ...
+                }
 
-                  // egui::ImageData::Font(x) => {
-                  //     let dst = payload.as_mut_slice();
+                // 2026-2-25, egui::ImageData::Font variant disappeared. Leaving this variant until find out exactly what's happening ...
+                #[cfg(any())]
+                egui::ImageData::Font(x) => {
+                    let dst = payload.as_mut_slice();
 
-                  //     for (i, color) in dst.chunks_mut(4).zip(x.srgba_pixels(None)) {
-                  //         let color = color.to_array();
-                  //         i.copy_from_slice(&color);
-                  //     }
+                    for (i, color) in dst.chunks_mut(4).zip(x.srgba_pixels(None)) {
+                        let color = color.to_array();
+                        i.copy_from_slice(&color);
+                    }
 
-                  //     classes::image::Format::RGBA8
-                  // }
+                    classes::image::Format::RGBA8
+                }
             };
 
             let Some(src_image) = godot::classes::Image::create_from_data(
@@ -84,6 +86,9 @@ impl TextureLibrary {
 
             tex.gd_src_img
                 .blit_rect(&src_image, Rect2i::new(Vector2i::ZERO, src_size), dst_pos);
+
+            // Reflect CPU-side image changes to the GPU texture.
+            tex.gd_tex.update(&tex.gd_src_img);
         } else {
             let Some(gd_tex) = classes::ImageTexture::create_from_image(&src_image) else {
                 godot_error!("Failed to create texture from image!");
@@ -137,8 +142,10 @@ pub(crate) struct EguiViewportBridge {
     /// EGUI context that this viewport is associated with.
     context: Option<egui::Context>,
 
-    /// Rendered primitives
-    canvas_items: Vec<Rid>,
+    /// Rendered primitives: pairs of (clip_parent, draw_child) canvas items.
+    /// The clip parent has `canvas_item_set_clip(true)` and custom_rect set to the clip
+    /// rectangle; the draw child is where the actual mesh is rendered.
+    canvas_items: Vec<[Rid; 2]>,
 
     /// Cached ui scale
     #[init(val = 1.0)]
@@ -188,8 +195,9 @@ impl IControl for EguiViewportBridge {
         // Don't make it leak resource.
         let mut gd_rs = RenderingServer::singleton();
 
-        for rid in self.canvas_items.drain(..) {
-            gd_rs.free_rid(rid);
+        for [rid_clip, rid_draw] in self.canvas_items.drain(..) {
+            gd_rs.free_rid(rid_draw);
+            gd_rs.free_rid(rid_clip);
         }
     }
 
@@ -372,25 +380,27 @@ impl EguiViewportBridge {
                             self.on_event(egui::Event::Zoom(B.powf(delta)));
                         } else {
                             #[cfg(any())]
-                            let delta = if modifiers.shift_only() {
-                                // Horizontal
-                                Some([delta, 0.0])
-                            } else if modifiers.is_none() {
-                                Some([0.0, delta])
-                            } else {
-                                None
-                            };
+                            // egui::Event::Scroll has disappeared ... seems replaced by MouseWheel event.
+                            {
+                                let delta = if modifiers.shift_only() {
+                                    // Horizontal
+                                    Some([delta, 0.0])
+                                } else if modifiers.is_none() {
+                                    Some([0.0, delta])
+                                } else {
+                                    None
+                                };
 
-                            #[cfg(any())]
-                            if let Some(_delta) = delta {
-                                const SCROLL_AMOUNT: f32 = 100.;
+                                if let Some(_delta) = delta {
+                                    const SCROLL_AMOUNT: f32 = 100.;
 
-                                // TODO: in 0.30, `Scroll` event seems removed. Check if sending
-                                // `MouseWheel` event is sufficient.
+                                    // TODO: in 0.30, `Scroll` event seems removed. Check if sending
+                                    // `MouseWheel` event is sufficient.
 
-                                self.on_event(egui::Event::Touch(
-                                    egui::Vec2::from(delta) * SCROLL_AMOUNT,
-                                ));
+                                    self.on_event(egui::Event::MouseWheel(
+                                        egui::Vec2::from(delta) * SCROLL_AMOUNT,
+                                    ));
+                                }
                             }
                         }
                     }
@@ -472,36 +482,47 @@ impl EguiViewportBridge {
         self.ui_scale_cache = scale;
 
         // Performs bookkeeping - Make `self.canvas_items` be same length as input shapes.
+        // Each entry is a [clip_parent, draw_child] pair. The clip parent has
+        // `canvas_item_set_clip(true)` with custom_rect matching the egui clip rectangle,
+        // and the draw child is where the actual mesh triangles are rendered.
         {
             let rid_self_canvas = self.base().get_canvas_item();
 
             // Create missing items.
             for index in 0..shapes.len() {
                 if index >= self.canvas_items.len() {
-                    let rid = gd_rs.canvas_item_create();
-                    self.canvas_items.push(rid);
+                    let rid_clip = gd_rs.canvas_item_create();
+                    let rid_draw = gd_rs.canvas_item_create();
 
-                    gd_rs.canvas_item_set_parent(rid, rid_self_canvas);
-                    gd_rs.canvas_item_set_clip(rid, true);
-                    gd_rs.canvas_item_set_draw_index(rid, index as i32);
+                    gd_rs.canvas_item_set_parent(rid_clip, rid_self_canvas);
+                    gd_rs.canvas_item_set_clip(rid_clip, true);
+                    gd_rs.canvas_item_set_draw_index(rid_clip, index as i32);
+
+                    gd_rs.canvas_item_set_parent(rid_draw, rid_clip);
+
+                    self.canvas_items.push([rid_clip, rid_draw]);
                 } else {
-                    let rid = self.canvas_items[index];
-                    gd_rs.canvas_item_clear(rid);
+                    let [rid_clip, rid_draw] = self.canvas_items[index];
+                    gd_rs.canvas_item_clear(rid_clip);
+                    gd_rs.canvas_item_clear(rid_draw);
                 }
             }
 
             // Dispose unused items.
-            for rid in self
+            for [rid_clip, rid_draw] in self
                 .canvas_items
                 .drain(shapes.len()..self.canvas_items.len())
             {
-                gd_rs.free_rid(rid);
+                gd_rs.free_rid(rid_draw);
+                gd_rs.free_rid(rid_clip);
             }
         }
 
         // Render mesh content
 
-        for (primitive, rid_item) in shapes.into_iter().zip(self.canvas_items.iter().cloned()) {
+        for (primitive, &[rid_clip, rid_draw]) in
+            shapes.into_iter().zip(self.canvas_items.iter())
+        {
             let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive else {
                 godot_error!("unsupported primitive");
                 continue;
@@ -511,18 +532,6 @@ impl EguiViewportBridge {
                 godot_warn!("Missing Texture: {:?}", mesh.texture_id);
                 return;
             };
-
-            #[cfg(any())]
-            for face in mesh.indices.chunks(3) {
-                let idxs: [_; 3] = std::array::from_fn(|i| face[i] as usize);
-                let v = idxs.map(|i| mesh.vertices[i]);
-                let p = v.map(|v| Vector2::new(v.pos.x, v.pos.y));
-                let c = v.map(|v| v.color).map(|_| Color::MAGENTA);
-
-                gd_rs.canvas_item_add_line(rid_item, p[0], p[1], c[0]);
-                gd_rs.canvas_item_add_line(rid_item, p[1], p[2], c[1]);
-                gd_rs.canvas_item_add_line(rid_item, p[2], p[0], c[2]);
-            }
 
             let mut verts = PackedVector2Array::new();
             let mut uvs = PackedVector2Array::new();
@@ -563,31 +572,19 @@ impl EguiViewportBridge {
             clip.max.x *= scale;
             clip.max.y *= scale;
 
+            // Set custom rect on the clip parent so its clipping region matches
+            // the egui clip rectangle.
             gd_rs
-                .canvas_item_set_custom_rect_ex(rid_item, true)
+                .canvas_item_set_custom_rect_ex(rid_clip, true)
                 .rect(clip.to_counterpart())
                 .done();
 
+            // Draw the mesh on the child canvas item (which is clipped by the parent).
             gd_rs
-                .canvas_item_add_triangle_array_ex(rid_item, &indices, &verts, &colors)
+                .canvas_item_add_triangle_array_ex(rid_draw, &indices, &verts, &colors)
                 .texture(texture.get_rid())
                 .uvs(&uvs)
                 .done();
-
-            #[cfg(any())] // Clip rect vis for debugging purpose.
-            {
-                let line = [
-                    clip.min,
-                    clip.min.tap_mut(|x| x.x = clip.max.x),
-                    clip.max,
-                    clip.min.tap_mut(|x| x.y = clip.max.y),
-                ]
-                .map(|x| x.to_counterpart());
-
-                line.windows(2).for_each(|x| {
-                    gd_rs.canvas_item_add_line(rid_item, x[0], x[1], Color::GREEN);
-                });
-            }
         }
     }
 }
