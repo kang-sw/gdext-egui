@@ -24,7 +24,6 @@ use godot::{
         control::{LayoutPreset, MouseFilter},
         window, CanvasLayer, Control, DisplayServer, ICanvasLayer, WeakRef,
     },
-    global::weakref,
     prelude::*,
 };
 use tap::prelude::{Pipe, Tap};
@@ -570,17 +569,14 @@ impl EguiBridge {
         self.try_initiate();
 
         // Register immediate renderer for this frame.
-        let w_self = weakref(&self.to_gd().to_variant());
+        // NOTE: Capture only the InstanceId (a Copy integer) instead of a Variant/WeakRef,
+        // because this closure is stored in egui's thread-local and may outlive the Godot
+        // engine binding — dropping a Variant after engine shutdown causes a panic.
+        let self_id = self.to_gd().instance_id();
 
-        // TODO: Make this not to capture anything; instead let it retrieve required data
-        // from `ctx`
         egui::Context::set_immediate_viewport_renderer(move |ctx, mut viewport| {
-            let Ok(this) = w_self.try_to::<Gd<WeakRef>>() else {
-                unreachable!();
-            };
-
-            let Ok(this) = this.get_ref().try_to::<Gd<Self>>() else {
-                // It's just expired.
+            let Ok(this) = Gd::<Self>::try_from_instance_id(self_id) else {
+                // Object has been freed.
                 return;
             };
 
