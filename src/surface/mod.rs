@@ -1,0 +1,435 @@
+mod input;
+
+use egui::{ahash::HashMap, DragAndDrop, ViewportId};
+use godot::{
+    classes::{
+        self,
+        control::{FocusMode, LayoutPreset, MouseFilter},
+        notify::ControlNotification,
+        Control, IControl, ImageTexture, RenderingServer,
+    },
+    prelude::*,
+};
+use itertools::multizip;
+use tap::prelude::Tap;
+
+use crate::DragAndDropVariant;
+
+/* ----------------------------------------- Texture Lib ---------------------------------------- */
+
+#[derive(Default)]
+pub struct TextureLibrary {
+    textures: HashMap<egui::TextureId, TextureDescriptor>,
+}
+
+struct TextureDescriptor {
+    gd_src_img: Gd<classes::Image>,
+    gd_tex: Gd<ImageTexture>,
+}
+
+impl TextureLibrary {
+    pub fn update_texture(&mut self, id: egui::TextureId, src: egui::epaint::ImageDelta) {
+        // Retrieve image from delivered data
+        let src_image = {
+            let mut payload = PackedByteArray::new();
+            payload.resize(src.image.bytes_per_pixel() * src.image.width() * src.image.height());
+
+            let format = match &src.image {
+                egui::ImageData::Color(x) => {
+                    // We just assume that the image is in RGBA8 format.
+                    let dst = payload.as_mut_slice();
+
+                    for (i, color) in dst.chunks_mut(4).zip(x.pixels.iter()) {
+                        let color = color.to_srgba_unmultiplied();
+                        i.copy_from_slice(&color);
+                    }
+
+                    // payload.as_mut_slice().copy;
+                    classes::image::Format::RGBA8
+                }
+
+                // 2026-2-25, egui::ImageData::Font variant disappeared. Leaving this variant until find out exactly what's happening ...
+                #[cfg(any())]
+                egui::ImageData::Font(x) => {
+                    let dst = payload.as_mut_slice();
+
+                    for (i, color) in dst.chunks_mut(4).zip(x.srgba_pixels(None)) {
+                        let color = color.to_array();
+                        i.copy_from_slice(&color);
+                    }
+
+                    classes::image::Format::RGBA8
+                }
+            };
+
+            let Some(src_image) = godot::classes::Image::create_from_data(
+                src.image.width() as _,
+                src.image.height() as _,
+                false,
+                format,
+                &payload,
+            ) else {
+                godot_error!("Failed to create image from data!");
+                return;
+            };
+
+            src_image
+        };
+
+        if let Some(pos) = src.pos {
+            let tex = self.textures.get_mut(&id).unwrap();
+
+            let src_size = src_image.get_size();
+
+            // Partial update on image
+            let dst_pos = Vector2i::new(pos[0] as _, pos[1] as _);
+
+            tex.gd_src_img
+                .blit_rect(&src_image, Rect2i::new(Vector2i::ZERO, src_size), dst_pos);
+
+            // Reflect CPU-side image changes to the GPU texture.
+            tex.gd_tex.update(&tex.gd_src_img);
+        } else {
+            let Some(gd_tex) = classes::ImageTexture::create_from_image(&src_image) else {
+                godot_error!("Failed to create texture from image!");
+                return;
+            };
+
+            let tex = TextureDescriptor {
+                gd_src_img: src_image,
+                gd_tex,
+            };
+
+            // Replace or insert new texture.
+            self.textures.insert(id, tex);
+        }
+    }
+
+    pub fn free_texture(&mut self, id: egui::TextureId) {
+        godot_print!("Freeing Texture: {:?}", id);
+
+        // NOTE: Textures are all ref-counted.
+        if self.textures.remove(&id).is_none() {
+            // Texture could be uninitialized due to error.
+            godot_warn!("Texture not found! {:?}", id);
+        };
+    }
+
+    pub fn _clear(&mut self) {
+        // RefCounted object doesn't need to be freed manually.
+        self.textures.clear();
+    }
+
+    fn get(&self, id: &egui::TextureId) -> Option<Gd<ImageTexture>> {
+        self.textures.get(id).map(|x| x.gd_tex.clone())
+    }
+}
+
+/* ------------------------------------------ Viewport ------------------------------------------ */
+
+/// Represents a spawned viewport
+#[derive(GodotClass)]
+#[class(base=Control, tool, init, internal, rename=INTERNAL__GodotEguiViewportBridge)]
+pub(crate) struct EguiViewportBridge {
+    base: Base<Control>,
+
+    /// Viewport ID of self.
+    viewport_id: Option<egui::ViewportId>,
+
+    /// Any GUI event will be forwarded to this.
+    fwd_event: Option<Box<dyn Fn(egui::Event)>>,
+
+    /// EGUI context that this viewport is associated with.
+    context: Option<egui::Context>,
+
+    /// Rendered primitives: one canvas item per clipped primitive.
+    canvas_items: Vec<Rid>,
+
+    /// Materials for shader-based clip rect, parallel to canvas_items.
+    clip_materials: Vec<Rid>,
+
+    /// Shared clip rect shader (lazily created).
+    clip_shader: Option<Rid>,
+
+    /// Cached ui scale
+    #[init(val = 1.0)]
+    ui_scale_cache: f32,
+}
+
+#[godot_api]
+impl IControl for EguiViewportBridge {
+    fn ready(&mut self) {
+        self.base_mut().tap_mut(|b| {
+            // Makes node to fill the whole available space
+            b.set_anchors_and_offsets_preset(LayoutPreset::FULL_RECT);
+
+            // Make this node to be focusable
+            b.set_focus_mode(FocusMode::CLICK);
+        });
+    }
+
+    fn can_drop_data(&self, at_position: Vector2, data: Variant) -> bool {
+        // We just take any type of data once dropped. Also, we don't need to check the
+        // dropped position for now, it is currently tracked by egui context, and returns
+        // whether the control is owned by EGUI or not, by checking if the context
+        // requires pointer input.
+        let _ = (at_position, data);
+
+        self.context
+            .as_ref()
+            .is_some_and(|c| c.wants_pointer_input())
+    }
+
+    fn drop_data(&mut self, at_position: Vector2, data: Variant) {
+        let _ = at_position; // Don't care about the position for now.
+
+        let ctx = self.context.as_ref().expect("can_drop_data -> drop_data");
+        DragAndDrop::set_payload(ctx, DragAndDropVariant(data));
+    }
+
+    fn get_drag_data(&mut self, _at_position: Vector2) -> Variant {
+        // TODO: should handle either of these cases:
+        // - `egui drag` -> `godot drop`
+        // - `egui drag` -> `egui drop`
+
+        // TODO: Use `Control::force_drag` method
+        Variant::nil()
+    }
+    fn exit_tree(&mut self) {
+        // Don't make it leak resource.
+        let mut gd_rs = RenderingServer::singleton();
+
+        for rid in self.canvas_items.drain(..) {
+            gd_rs.free_rid(rid);
+        }
+        for rid in self.clip_materials.drain(..) {
+            gd_rs.free_rid(rid);
+        }
+        if let Some(shader) = self.clip_shader.take() {
+            gd_rs.free_rid(shader);
+        }
+    }
+
+    fn on_notification(&mut self, what: ControlNotification) {
+        match what {
+            ControlNotification::FOCUS_ENTER => {
+                self.on_event(egui::Event::WindowFocused(true));
+            }
+            ControlNotification::FOCUS_EXIT => {
+                self.on_event(egui::Event::WindowFocused(false));
+            }
+            ControlNotification::MOUSE_EXIT => {
+                self.on_event(egui::Event::PointerGone);
+            }
+            _ => (),
+        }
+    }
+
+    fn input(&mut self, event: Gd<classes::InputEvent>) {
+        let mut may_drop_payload = false;
+
+        if self.try_consume_input(event) {
+            may_drop_payload = true;
+            self.mark_input_handled();
+        }
+
+        if false & may_drop_payload {
+            let filter = if self.context.as_ref().unwrap().is_pointer_over_area() {
+                // Let this widget able to take drop payload / register drag payload.
+                MouseFilter::PASS
+            } else {
+                MouseFilter::IGNORE
+            };
+
+            self.base_mut().set_mouse_filter(filter);
+        } else {
+            self.base_mut().set_mouse_filter(MouseFilter::IGNORE);
+        }
+    }
+
+    fn gui_input(&mut self, event: Gd<classes::InputEvent>) {
+        if self.viewport_id == Some(ViewportId::ROOT) {
+            // See `input` method.
+            return;
+        }
+
+        if self.try_consume_input(event) {
+            self.base_mut().accept_event();
+        }
+    }
+}
+
+impl EguiViewportBridge {
+    fn on_event(&self, event: egui::Event) {
+        if let Some(ev) = self.fwd_event.as_deref() {
+            ev(event);
+
+            let (Some(ctx), Some(id)) = (&self.context, self.viewport_id) else {
+                unreachable!()
+            };
+
+            ctx.request_repaint_of(id);
+        }
+    }
+
+    fn mark_input_handled(&mut self) {
+        if let Some(mut vp) = self.base().get_viewport() {
+            vp.set_input_as_handled();
+        }
+    }
+
+    pub fn initiate(
+        &mut self,
+        ctx: egui::Context,
+        id: egui::ViewportId,
+        on_event: Box<dyn Fn(egui::Event)>,
+    ) {
+        self.context = Some(ctx);
+        self.fwd_event = Some(on_event);
+        self.viewport_id = Some(id);
+    }
+
+    pub fn draw(
+        &mut self,
+        textures: &TextureLibrary,
+        shapes: Vec<egui::epaint::ClippedPrimitive>,
+        scale: f32,
+    ) {
+        let mut gd_rs = RenderingServer::singleton();
+        self.ui_scale_cache = scale;
+
+        // Lazily create the clip rect shader.
+        let clip_shader = *self.clip_shader.get_or_insert_with(|| {
+            let shader = gd_rs.shader_create();
+            gd_rs.shader_set_code(shader, &GString::from(CLIP_SHADER_CODE));
+            shader
+        });
+
+        // Performs bookkeeping - Make canvas_items/materials be same length as
+        // input shapes.
+        {
+            let rid_self_canvas = self.base().get_canvas_item();
+
+            // Create missing items.
+            for index in 0..shapes.len() {
+                if index >= self.canvas_items.len() {
+                    let rid = gd_rs.canvas_item_create();
+                    gd_rs.canvas_item_set_parent(rid, rid_self_canvas);
+                    gd_rs.canvas_item_set_draw_index(rid, index as i32);
+                    self.canvas_items.push(rid);
+
+                    let mat = gd_rs.material_create();
+                    gd_rs.material_set_shader(mat, clip_shader);
+                    gd_rs.canvas_item_set_material(rid, mat);
+                    self.clip_materials.push(mat);
+                } else {
+                    gd_rs.canvas_item_clear(self.canvas_items[index]);
+                }
+            }
+
+            // Dispose unused items.
+            for index in (shapes.len()..self.canvas_items.len()).rev() {
+                gd_rs.free_rid(self.canvas_items[index]);
+                gd_rs.free_rid(self.clip_materials[index]);
+            }
+            self.canvas_items.truncate(shapes.len());
+            self.clip_materials.truncate(shapes.len());
+        }
+
+        // Render mesh content
+
+        for (index, primitive) in shapes.into_iter().enumerate() {
+            let rid_item = self.canvas_items[index];
+            let mat = self.clip_materials[index];
+
+            let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive else {
+                godot_error!("unsupported primitive");
+                continue;
+            };
+
+            let Some(texture) = textures.get(&mesh.texture_id) else {
+                godot_warn!("Missing Texture: {:?}", mesh.texture_id);
+                return;
+            };
+
+            let mut verts = PackedVector2Array::new();
+            let mut uvs = PackedVector2Array::new();
+            let mut colors = PackedColorArray::new();
+            let mut indices = PackedInt32Array::new();
+
+            verts.resize(mesh.vertices.len());
+            colors.resize(mesh.vertices.len());
+            uvs.resize(mesh.vertices.len());
+
+            indices.resize(mesh.indices.len());
+
+            for (src, d_vert, d_uv, d_color) in itertools::multizip((
+                mesh.vertices.as_slice(),
+                verts.as_mut_slice(),
+                uvs.as_mut_slice(),
+                colors.as_mut_slice(),
+            )) {
+                d_vert.x = src.pos.x * scale;
+                d_vert.y = src.pos.y * scale;
+
+                d_uv.x = src.uv.x;
+                d_uv.y = src.uv.y;
+
+                d_color.r = src.color.r() as f32 / 255.0;
+                d_color.g = src.color.g() as f32 / 255.0;
+                d_color.b = src.color.b() as f32 / 255.0;
+                d_color.a = src.color.a() as f32 / 255.0;
+            }
+
+            for (src, dst) in multizip((mesh.indices.as_slice(), indices.as_mut_slice())) {
+                *dst = *src as i32;
+            }
+
+            let mut clip = primitive.clip_rect;
+            clip.min.x *= scale;
+            clip.min.y *= scale;
+            clip.max.x *= scale;
+            clip.max.y *= scale;
+
+            // Update clip_rect uniform on this primitive's material.
+            // Rect2 maps to vec4 as (pos.x, pos.y, size.x, size.y).
+            let clip_rect = Rect2::new(
+                Vector2::new(clip.min.x, clip.min.y),
+                Vector2::new(clip.max.x - clip.min.x, clip.max.y - clip.min.y),
+            );
+            gd_rs.material_set_param(mat, &StringName::from("clip_rect"), &clip_rect.to_variant());
+
+            gd_rs
+                .canvas_item_add_triangle_array_ex(rid_item, &indices, &verts, &colors)
+                .texture(texture.get_rid())
+                .uvs(&uvs)
+                .done();
+        }
+    }
+}
+
+/// Canvas item shader that performs pixel-level clip rect scissoring.
+///
+/// The `clip_rect` uniform is a Rect2 (vec4): (pos.x, pos.y, size.x, size.y).
+/// Fragments outside this rectangle are discarded.
+const CLIP_SHADER_CODE: &str = r#"
+shader_type canvas_item;
+
+uniform vec4 clip_rect;
+
+varying vec2 canvas_pos;
+
+void vertex() {
+    canvas_pos = VERTEX;
+}
+
+void fragment() {
+    vec2 clip_min = clip_rect.xy;
+    vec2 clip_max = clip_rect.xy + clip_rect.zw;
+    if (canvas_pos.x < clip_min.x || canvas_pos.y < clip_min.y ||
+        canvas_pos.x > clip_max.x || canvas_pos.y > clip_max.y) {
+        discard;
+    }
+    COLOR *= texture(TEXTURE, UV);
+}
+"#;
