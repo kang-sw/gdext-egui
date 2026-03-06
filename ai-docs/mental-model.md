@@ -14,9 +14,14 @@ See [architecture.md](mental-model/architecture.md) for detailed module descript
 
 ### Core Components
 
-- **`EguiBridge`** (`src/context.rs`) - Primary Godot node (`CanvasLayer`-based, `GodotEguiBridge`). Manages the egui context lifecycle, viewport creation/destruction, input forwarding, rendering pipeline, and widget callbacks.
-- **`EguiViewportBridge`** (`src/surface.rs`) - Per-viewport Godot `Control` node that handles input events, rendering via `RenderingServer` canvas items, and clip-rect shader-based scissoring.
-- **`TextureLibrary`** (`src/surface.rs`) - Manages egui texture allocation/updates as Godot `ImageTexture` objects.
+- **`EguiBridge`** (`src/context/`) - Primary Godot node (`CanvasLayer`-based, `GodotEguiBridge`). Split into submodules:
+  - `mod.rs` — struct definition, internal types, Godot lifecycle, public API
+  - `frame.rs` — frame lifecycle (initiate, start/finish frame, callbacks)
+  - `viewport.rs` — viewport lifecycle (validate, commands, start/end frame)
+  - `widget_traits.rs` — `WidgetRetain`, `FnEguiDraw`, `CheckExpired`, `FnEguiDrawExt`
+- **`EguiViewportBridge`** (`src/surface/`) - Per-viewport Godot `Control` node. Split into:
+  - `mod.rs` — struct, Godot callbacks, `TextureLibrary`, `draw()` method
+  - `input.rs` — `try_consume_input`, key/modifier mapping functions
 - **Widget System** (`src/widgets.rs`) - Panel-based widget spawning system with predefined layout groups (Left, Right, Central, BottomLeft, BottomRight) and lifecycle management.
 - **Helpers** (`src/lib.rs`) - Type conversion traits (`ToCounterpart`) between Godot and egui math types, plus `DragAndDropVariant` for cross-system DnD.
 
@@ -42,10 +47,7 @@ See [architecture.md](mental-model/architecture.md) for detailed module descript
 
 ## Recent Work
 
+- Refactored `context.rs` and `surface.rs` into module directories for navigability (no API changes)
+- Deleted unused `src/_widget.rs`
 - v0.4.1: Version bump for publishing
 - v0.4.0: Added clip-rect shader for proper scissoring, fixed texture partial updates, shutdown panic fix
-- Migrated to egui 0.33 (ImageData::Font variant removed)
-
-## Short-term Context
-
-- CLAUDE.md and ai-docs structure just initialized.
