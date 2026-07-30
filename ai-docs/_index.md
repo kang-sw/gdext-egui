@@ -72,18 +72,12 @@ Mental models describe the implicit contracts you must not break while changing 
 ## Session Notes
 
 - Workflow bootstrapped: `AGENTS.md` is canonical, `CLAUDE.md` is a shim, ticket directories created.
-- Spec baseline forged across 6 domains (44 stems); mental models reforged across 5 domains.
-  No tickets exist yet.
-- Confirmed defects with no ticket, found while forging and verified against source:
-  - `Gd<T>` expiry sentinel has inverted polarity (`mental-model/widget-callbacks.md`).
-  - `egui::Rect` -> `Rect2` writes the max corner into the size field (`spec/interop-helpers.md`).
-  - Off-main-thread frame start double-consumes the frame claim, producing an unbalanced
-    `end_pass` (`mental-model/frame-lifecycle.md`).
-  - Re-entrant callback registration can be silently discarded by the merge in
-    `invoke_registered_callbacks` (`mental-model/widget-callbacks.md`).
-  - The spawned-viewport input mode is defeated at `NOTIFICATION_READY`, killing the GUI-input
-    and drop paths for all viewports (`mental-model/input-routing.md`). Needs runtime
-    confirmation in a Godot instance.
-- Spec statements contradicted by source and not yet corrected: `spec/widget-callbacks.md`
-  claims stable tie ordering and that re-entrant registration skips no entries;
-  `spec/input.md` describes Godot-to-egui drops as working.
+- Spec baseline forged across 6 domains (44 stems); mental models forged across 5 domains.
+- Five defects found during forging are filed in `ai-docs/tickets/todo/` as `260730-bug-*`.
+  Two of them may resolve by narrowing the spec rather than changing code, and both say so:
+  whether `viewport_spawn` should remain thread-safe, and whether spawned viewports should use
+  the GUI-input route at all. Those are owner decisions.
+- `260730-bug-spawned-viewport-input-mode` is inferred from engine and binding source and has
+  **not** been observed at runtime. Its Phase 1 is reproduction in a Godot editor.
+- Every spec statement known to contradict source now carries an Implementation Gap callout
+  naming its ticket. Nothing in `ai-docs/` is knowingly wrong as of this entry.
