@@ -27,6 +27,14 @@ groups; a frame-start callback always runs before every frame-end callback regar
 
 A callback receives `&egui::Context` and returns anything convertible into a retain decision.
 
+> [!note] Implementation Gap · 2026-07-30
+> Missing behavior. Ties do not keep their existing relative order. Registration inserts at an
+> index found by binary search, which is unspecified among equal priorities, so a new callback
+> can land ahead of an already-registered peer; and the merge performed after each invocation
+> systematically places callbacks registered during that pass ahead of retained ones at the same
+> priority. Callers that need a defined order between two callbacks must give them different
+> priorities. Tracked by `260730-bug-callback-merge-discards-registrations`.
+
 ## Retain and Dispose {#260730-widget-retain-lifetime}
 
 A callback's return value decides whether it stays registered:
@@ -55,6 +63,14 @@ invoking it, so registration from inside is safe and does not deadlock or skip e
 Callbacks registered this way take effect on the next frame, not the current one. The merged list
 is re-sorted by priority afterwards, so a late registration still lands in its correct ordering
 position rather than at the end.
+
+> [!note] Implementation Gap · 2026-07-30
+> Missing behavior. A registration made from inside a callback is silently discarded whenever
+> every callback in that group disposed itself during the same pass: the merge that restores the
+> list only combines the two halves when both are non-empty, and otherwise overwrites with the
+> survivors. The clearest case is a callback wrapped in `once()` that registers its own
+> successor — the successor never runs and nothing is reported. Tracked by
+> `260730-bug-callback-merge-discards-registrations`.
 
 ## Registration Wakes the UI {#260730-registration-wakes-repaint}
 

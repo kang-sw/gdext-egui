@@ -75,7 +75,7 @@ When a spec heading `{#slug}` changes, include `renamed-spec: <old-stem> -> <new
 <!-- Project-wide invariants the AI must never violate. -->
 
 1. **Single-threaded core.** `EguiBridge` and `EguiViewportBridge` run on the Godot main thread only; `_non_send_sync: PhantomData<*const ()>` enforces this. Do not introduce cross-thread access to egui or Godot object handles.
-2. **[Rule name].** [Rule description.]
+2. **No Godot calls under the viewport lock.** `viewport_validate` holds `share.viewports` across command application and info sync. A Godot call that synchronously emits a signal re-enters egui's repaint callback, which takes that same non-reentrant lock and self-deadlocks. Any new engine call reachable from there must go through `DeferredCommand` instead of being made inline. See `ai-docs/mental-model/viewport-lifecycle.md`.
 
 <!-- Optional for GUI/TUI projects:
 1. **Headless-testable architecture.** Domain logic and state live in framework-agnostic layers testable without a display. UI layers stay thin: no branching logic, state ownership, or domain knowledge.

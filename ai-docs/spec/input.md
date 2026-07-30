@@ -26,6 +26,16 @@ input and accept the event when egui claims it.
 The practical consequence for callers is that egui always sits above the rest of the UI, and
 non-egui controls keep receiving everything egui declines.
 
+> [!note] Implementation Gap · 2026-07-30
+> Missing behavior. Spawned viewports are believed not to use the GUI-input route in practice.
+> The call that removes them from the global input path runs before their surface enters the
+> scene tree, and Godot re-enables that path on entry for any node implementing the hook, so
+> spawned surfaces take the same global route the root does. Input still reaches egui, but the
+> GUI-input route and everything gated behind a non-ignored mouse filter — drop targeting and
+> pointer enter/exit notifications — do not run for any viewport. Derived from engine and
+> binding source, not observed at runtime. Tracked by
+> `260730-bug-spawned-viewport-input-mode`.
+
 ## Input Consumption {#260730-input-consumption}
 
 Whether an event continues to the game depends on the event kind and on what egui currently
@@ -156,6 +166,13 @@ Godot's control notifications drive egui's window-level input state:
 Every forwarded input event also requests a repaint of its viewport, so the UI responds
 immediately rather than on the next frame that happens to be drawn for another reason.
 
+> [!note] Implementation Gap · 2026-07-30
+> Missing behavior. The pointer-gone notification does not arrive, for the reason given under
+> Input Routing above: an ignored mouse filter suppresses pointer enter and exit notifications,
+> and every surface ends up with one. Hover highlights therefore stay lit when the pointer
+> leaves. Focus notifications are unaffected, because focus is taken programmatically on click.
+> Tracked by `260730-bug-spawned-viewport-input-mode`.
+
 ## Drag and Drop from Godot {#260730-godot-drop-into-egui}
 
 A drag started elsewhere in Godot can be dropped onto an egui surface. The surface accepts any
@@ -168,7 +185,15 @@ considers the pointer to be over its own UI.
 > [!note] Implementation Gap · 2026-07-30
 > Missing behavior. Dragging out of egui is not implemented — the surface always reports an empty
 > drag payload, so neither egui-to-Godot nor egui-to-egui drags start. Only the Godot-to-egui
-> direction works.
+> direction is implemented at all.
+
+> [!note] Implementation Gap · 2026-07-30
+> Missing behavior. The Godot-to-egui direction described above is believed not to reach a
+> surface in practice either. Every surface ends up on the global input path, whose handler
+> unconditionally sets the mouse filter to ignore, and Godot skips ignored controls when looking
+> for a drop target — so the accept and deliver hooks are never invoked. This has been derived
+> from engine and binding source but not observed at runtime; confirming it requires a running
+> Godot instance. Tracked by `260730-bug-spawned-viewport-input-mode`.
 
 ## Opening Links {#260730-open-url-output}
 
