@@ -43,9 +43,21 @@ user to run it when a change touches drawing or input.
 
 ## Read Before Editing
 
-- `ai-docs/mental-model.md` - component map, rendering pipeline, viewport model
-- `ai-docs/mental-model/architecture.md` - key types, rendering/input/threading details
-  (stale: still describes flat `context.rs` / `surface.rs` and a removed `_widget.rs`)
+Specs describe current caller-visible behavior and are the reliable starting point:
+
+- `ai-docs/spec/bridge-lifecycle.md` - the `GodotEguiBridge` node, frame entry points, threading
+- `ai-docs/spec/viewport.md` - root/spawned viewports, window commands, close negotiation
+- `ai-docs/spec/widget-callbacks.md` - registered draw callbacks, retain/dispose, decorators
+- `ai-docs/spec/input.md` - event routing, consumption, key/modifier mapping, clipboard, DnD
+- `ai-docs/spec/rendering.md` - canvas items, clip shader, textures, cursor
+- `ai-docs/spec/interop-helpers.md` - egui re-export, geometry conversions, DnD payload
+
+Mental-model docs are **stale** and contradicted by the specs above — do not trust them until
+they are reforged:
+
+- `ai-docs/mental-model.md` - describes a `src/widgets.rs` panel system that does not exist
+- `ai-docs/mental-model/architecture.md` - describes flat `context.rs` / `surface.rs` and a
+  removed `_widget.rs`
 
 ## Operational Notes
 
@@ -58,4 +70,9 @@ user to run it when a change touches drawing or input.
 ## Session Notes
 
 - Workflow bootstrapped: `AGENTS.md` is canonical, `CLAUDE.md` is a shim, ticket directories created.
-- No specs or tickets exist yet.
+- Spec baseline forged across 6 domains (37 stems). No tickets exist yet.
+- Forging surfaced 12 Implementation Gap callouts across the specs, two of which are outright
+  defects with no ticket: the `Gd<T>` expiry sentinel has inverted polarity
+  (`widget-callbacks.md`), and `egui::Rect` -> `Rect2` conversion writes the max corner into the
+  size field (`interop-helpers.md`).
+- Mental models still need reforging (`ws:lead-forge-mental-model`).
