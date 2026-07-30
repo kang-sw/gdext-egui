@@ -52,12 +52,14 @@ Specs describe current caller-visible behavior and are the reliable starting poi
 - `ai-docs/spec/rendering.md` - canvas items, clip shader, textures, cursor
 - `ai-docs/spec/interop-helpers.md` - egui re-export, geometry conversions, DnD payload
 
-Mental-model docs are **stale** and contradicted by the specs above — do not trust them until
-they are reforged:
+Mental models describe the implicit contracts you must not break while changing that behavior:
 
-- `ai-docs/mental-model.md` - describes a `src/widgets.rs` panel system that does not exist
-- `ai-docs/mental-model/architecture.md` - describes flat `context.rs` / `surface.rs` and a
-  removed `_widget.rs`
+- `ai-docs/mental-model.md` - crate graph, the single-thread proof, reading map
+- `ai-docs/mental-model/frame-lifecycle.md` - the frame claim, pass window, teardown order
+- `ai-docs/mental-model/viewport-lifecycle.md` - validate/start/end triple, the deadlock lock
+- `ai-docs/mental-model/widget-callbacks.md` - registry invariants, retain/dispose, sentinels
+- `ai-docs/mental-model/surface-rendering.md` - RID pooling, clip shader, texture ordering
+- `ai-docs/mental-model/input-routing.md` - routing modes, consumption, coordinate spaces
 
 ## Operational Notes
 
@@ -70,9 +72,18 @@ they are reforged:
 ## Session Notes
 
 - Workflow bootstrapped: `AGENTS.md` is canonical, `CLAUDE.md` is a shim, ticket directories created.
-- Spec baseline forged across 6 domains (37 stems). No tickets exist yet.
-- Forging surfaced 12 Implementation Gap callouts across the specs, two of which are outright
-  defects with no ticket: the `Gd<T>` expiry sentinel has inverted polarity
-  (`widget-callbacks.md`), and `egui::Rect` -> `Rect2` conversion writes the max corner into the
-  size field (`interop-helpers.md`).
-- Mental models still need reforging (`ws:lead-forge-mental-model`).
+- Spec baseline forged across 6 domains (44 stems); mental models reforged across 5 domains.
+  No tickets exist yet.
+- Confirmed defects with no ticket, found while forging and verified against source:
+  - `Gd<T>` expiry sentinel has inverted polarity (`mental-model/widget-callbacks.md`).
+  - `egui::Rect` -> `Rect2` writes the max corner into the size field (`spec/interop-helpers.md`).
+  - Off-main-thread frame start double-consumes the frame claim, producing an unbalanced
+    `end_pass` (`mental-model/frame-lifecycle.md`).
+  - Re-entrant callback registration can be silently discarded by the merge in
+    `invoke_registered_callbacks` (`mental-model/widget-callbacks.md`).
+  - The spawned-viewport input mode is defeated at `NOTIFICATION_READY`, killing the GUI-input
+    and drop paths for all viewports (`mental-model/input-routing.md`). Needs runtime
+    confirmation in a Godot instance.
+- Spec statements contradicted by source and not yet corrected: `spec/widget-callbacks.md`
+  claims stable tie ordering and that re-entrant registration skips no entries;
+  `spec/input.md` describes Godot-to-egui drops as working.
