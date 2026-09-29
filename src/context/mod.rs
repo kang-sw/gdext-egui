@@ -44,7 +44,7 @@ pub struct EguiBridge {
     ///
     /// The texture will be 2^max_texture_size
     #[export]
-    #[var(get, set)]
+    #[var(pub)]
     #[init(val = 13)]
     pub max_texture_bits: u8,
 

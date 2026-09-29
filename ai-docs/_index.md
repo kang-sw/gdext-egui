@@ -13,8 +13,8 @@ Godot games and editor plugins. Published on crates.io under MPL-2.0.
 
 ## Stack
 
-- Rust 2021, crate `gdext-egui` v0.4.1
-- `godot` 0.4, `egui` 0.33
+- Rust 2021, crate `gdext-egui` v0.5.0
+- `godot` 0.5 (requires Rust 1.94+), `egui` 0.33
 - Support crates: `itertools`, `crossbeam-queue`, `oneshot`, `tap`, `derive_setters`, `educe`,
   `with_drop`, `open`
 

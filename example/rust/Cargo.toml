@@ -11,7 +11,7 @@ name = "gdext_egui_example"
 path = "lib.rs"
 
 [dependencies]
-godot = "0.4"
+godot = "0.5"
 gdext-egui = { path = "../.." }
 
 egui_demo_lib = "0.33"

@@ -410,7 +410,7 @@ impl EguiBridge {
 
             let info = &mut viewport.info;
 
-            let inner_pos = gd_wnd.get_position().cast_float() + surface.painter.get_position();
+            let inner_pos = gd_wnd.get_position().to_vector2() + surface.painter.get_position();
             let inner_size = surface.painter.get_size();
 
             let gd_ds = DisplayServer::singleton();

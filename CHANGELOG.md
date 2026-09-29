@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-09-30
+
+### Changed
+
+- Upgrade to `godot` 0.5 (requires Rust 1.94+). `egui` stays at 0.33.
+- `EguiBridge::max_texture_bits` keeps its public Rust accessors
+  (`get_max_texture_bits` / `set_max_texture_bits`) through `#[var(pub)]`, since
+  godot-rust 0.5 made `#[var(get, set)]` look for user-defined accessors.
+
 ## [0.4.1] - 2026-03-01
 
 ### Fixed

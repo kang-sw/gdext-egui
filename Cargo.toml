@@ -1,6 +1,6 @@
 [package]
 name = "gdext-egui"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 repository = "https://github.com/kang-sw/gdext-egui"
 description = "egui bindings for gdext"
@@ -10,7 +10,7 @@ license = "MPL-2.0"
 exclude = ["example/.rust"]
 
 [dependencies]
-godot =  "0.4"
+godot = "0.5"
 egui = { version = "0.33" }
 
 itertools = "0.14"
