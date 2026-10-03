@@ -22,7 +22,10 @@ tree, cannot be inspected as nodes in the remote debugger, and is unaffected by 
 operations. Its position in the overall draw order is determined by the bridge's `CanvasLayer`.
 
 Vertex colors and UVs are passed through to Godot as-is, so egui's own styling — including
-transparency and texture atlases — renders unmodified.
+transparency and texture atlases — renders unmodified. egui's vertex colors are premultiplied,
+so primitives blend with premultiplied alpha; textures are stored unmultiplied (see Texture
+Management) and premultiplied per fragment, so translucent colors fade toward transparent rather
+than toward black.
 
 > [!note] Implementation Gap · 2026-07-30
 > Missing behavior. Only mesh primitives are drawn. egui's custom paint callbacks are not

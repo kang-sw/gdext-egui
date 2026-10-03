@@ -411,9 +411,11 @@ impl EguiViewportBridge {
 /// Canvas item shader that performs pixel-level clip rect scissoring.
 ///
 /// The `clip_rect` uniform is a Rect2 (vec4): (pos.x, pos.y, size.x, size.y).
-/// Fragments outside this rectangle are discarded.
+/// Fragments outside this rectangle are discarded. Blending is premultiplied
+/// alpha, matching egui's premultiplied vertex colours.
 const CLIP_SHADER_CODE: &str = r#"
 shader_type canvas_item;
+render_mode blend_premul_alpha;
 
 uniform vec4 clip_rect;
 
@@ -430,6 +432,8 @@ void fragment() {
         canvas_pos.x > clip_max.x || canvas_pos.y > clip_max.y) {
         discard;
     }
-    COLOR *= texture(TEXTURE, UV);
+    // egui vertex colours are premultiplied; textures are uploaded unmultiplied.
+    vec4 texel = texture(TEXTURE, UV);
+    COLOR *= vec4(texel.rgb * texel.a, texel.a);
 }
 "#;

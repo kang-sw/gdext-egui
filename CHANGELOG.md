@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Translucent egui colors no longer render too dark. The canvas shader blended egui's
+  premultiplied vertex colors with `blend_mix`, applying alpha twice; it now uses
+  `blend_premul_alpha` and premultiplies the texture sample.
+
 ## [0.5.0] - 2026-09-30
 
 ### Changed

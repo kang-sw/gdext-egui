@@ -54,9 +54,13 @@ related:
 
 ## Common Mistakes
 
-- **Dropping `COLOR *= texture(TEXTURE, UV)` from the fragment shader.** The custom shader
-  replaces Godot's default, so that line is what textures the UI at all; without it every
-  widget renders as flat untextured color.
+- **Dropping the texture multiply from the fragment shader.** The custom shader replaces
+  Godot's default, so that line is what textures the UI at all; without it every widget
+  renders as flat untextured color.
+- **Mismatching the alpha convention.** egui's vertex colors are premultiplied and textures
+  are uploaded unmultiplied, so the shader uses `blend_premul_alpha` and premultiplies the
+  texel. Godot's default `blend_mix` multiplies color by alpha a second time, which darkens
+  every translucent color (fades go toward black).
 - **Adding a transform to a pooled canvas item.** The shader compares the raw pre-transform
   vertex against a clip rect computed in the same space. Any per-item transform, or reparenting
   under a non-identity transform, misaligns clipping without an error.
